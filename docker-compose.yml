@@ -1,0 +1,23 @@
+name: paper-analyzer
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: paper_analyzer_pg18
+    ports:
+      - "55432:5432"
+    environment:
+      POSTGRES_DB: paper_analyzer
+      POSTGRES_USER: paper_admin
+      POSTGRES_PASSWORD: paper_admin_dev
+    volumes:
+      - pg18_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "paper_admin", "-d", "paper_analyzer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pg18_data:
