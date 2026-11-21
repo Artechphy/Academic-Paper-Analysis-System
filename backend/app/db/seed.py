@@ -5,7 +5,8 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.db.models import RuleItem, RuleSet
@@ -271,7 +272,7 @@ BUILTIN_TEMPLATES = (
 BUILTIN_VERSION = "1.0.0"
 
 
-def _ensure_rule_set(session: Session, template: TemplateSeed) -> UUID:
+def _ensure_rule_set(session: Session, template: TemplateSeed, insert) -> UUID:
     statement = insert(RuleSet).values(
         code=template.code,
         version=BUILTIN_VERSION,
@@ -300,8 +301,9 @@ def _ensure_rule_set(session: Session, template: TemplateSeed) -> UUID:
 
 
 def seed_builtin_templates(session: Session) -> None:
+    insert = sqlite_insert if session.get_bind().dialect.name == "sqlite" else postgresql_insert
     for template in BUILTIN_TEMPLATES:
-        rule_set_id = _ensure_rule_set(session, template)
+        rule_set_id = _ensure_rule_set(session, template, insert)
         rule_items = [
             {
                 "rule_set_id": rule_set_id,

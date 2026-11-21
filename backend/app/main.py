@@ -1,13 +1,16 @@
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+from app.api.v1.router import router
 from app.config import settings
-from app.db.session import engine
+from app.db.session import engine, get_db
 
 
 @asynccontextmanager
@@ -19,6 +22,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="论文格式合规性分析系统", lifespan=lifespan)
+app.include_router(router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -29,10 +33,9 @@ app.add_middleware(
 
 
 @app.get("/api/v1/health")
-def health():
+def health(db: Annotated[Session, Depends(get_db)]):
     try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
     except SQLAlchemyError:
         return JSONResponse(
             status_code=503,

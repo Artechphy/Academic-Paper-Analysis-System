@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer"
     )
+    storage_dir: Path = Path(__file__).resolve().parents[1] / "storage"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
