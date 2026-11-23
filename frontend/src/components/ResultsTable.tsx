@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, FileWarning, Loader2, RefreshCw } from 'lucide-react';
+import { Eye, FileWarning, Loader2, RefreshCw, Wand2 } from 'lucide-react';
 import type { CheckRunSummary, RuleSetResponse } from '../types/api';
 import { formatDuration, formatFileSize, formatScore } from '../utils/format';
 import { VerdictBadge } from './VerdictBadge';
@@ -12,9 +12,11 @@ interface ResultsTableProps {
   hasActiveFilters: boolean;
   recheckOverrides: Record<string, CheckRunSummary>;
   recheckingPaperId: string | null;
+  openingRevisionRunId: string | null;
   onResetFilters: () => void;
   onInspectRun: (runId: string) => void;
   onQuickRecheck: (paperId: string, ruleSetId: string) => Promise<void>;
+  onOpenRevision: (runId: string) => void;
 }
 
 export function ResultsTable({
@@ -25,9 +27,11 @@ export function ResultsTable({
   hasActiveFilters,
   recheckOverrides,
   recheckingPaperId,
+  openingRevisionRunId,
   onResetFilters,
   onInspectRun,
   onQuickRecheck,
+  onOpenRevision,
 }: ResultsTableProps) {
   const [recheckMenu, setRecheckMenu] = useState<{
     paperId: string;
@@ -210,6 +214,22 @@ export function ResultsTable({
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="inline-flex items-center justify-end gap-1.5">
+                      {row.parse_status === 'success' && (
+                        <button
+                          type="button"
+                          disabled={openingRevisionRunId === row.id}
+                          onClick={() => onOpenRevision(row.id)}
+                          className="inline-flex h-7 items-center gap-1 rounded-md bg-[#234B7A] px-2.5 text-xs font-medium text-white hover:bg-[#1B3B61] disabled:opacity-55"
+                        >
+                          {openingRevisionRunId === row.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Wand2 className="h-3.5 w-3.5" />
+                          )}
+                          <span>调整论文</span>
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => onInspectRun(row.id)}

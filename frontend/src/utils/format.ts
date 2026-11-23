@@ -131,3 +131,33 @@ export function formatDateTime(iso: string | null | undefined): string {
     hour12: false,
   }).format(date);
 }
+
+export const FONT_LABELS: Record<string, string> = {
+  simsun: '宋体',
+  simhei: '黑体',
+  times_new_roman: 'Times New Roman',
+  microsoft_yahei: '微软雅黑',
+};
+
+export const ALIGNMENT_LABELS: Record<string, string> = {
+  left: '左对齐',
+  center: '居中',
+  right: '右对齐',
+  justify: '两端对齐',
+};
+
+export const SCOPE_LABELS: Record<string, string> = {
+  global: '全局规范',
+  cluster: '同类聚合',
+  point: '单点定位',
+};
+
+export function getFontLabel(fontName: string | null | undefined): string {
+  if (!fontName) return '未识别';
+  return FONT_LABELS[fontName] ?? fontName;
+}
+
+export function getAlignmentLabel(alignment: string | null | undefined): string {
+  if (!alignment) return '默认';
+  return ALIGNMENT_LABELS[alignment] ?? alignment;
+}

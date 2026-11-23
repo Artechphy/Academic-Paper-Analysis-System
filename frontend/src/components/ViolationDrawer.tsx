@@ -9,6 +9,7 @@ import {
   FileCheck2,
   Loader2,
   RefreshCw,
+  Wand2,
   X,
 } from 'lucide-react';
 import type { CheckRunDetail, RuleSetResponse, Severity, ViolationResponse } from '../types/api';
@@ -29,8 +30,10 @@ interface ViolationDrawerProps {
   detail: CheckRunDetail | null;
   ruleSets: RuleSetResponse[];
   rechecking: boolean;
+  openingRevision: boolean;
   onClose: () => void;
   onRecheck: (paperId: string, ruleSetId: string) => Promise<void>;
+  onOpenRevision: (runId: string) => void;
 }
 
 interface ViolationGroup {
@@ -47,8 +50,10 @@ export function ViolationDrawer({
   detail,
   ruleSets,
   rechecking,
+  openingRevision,
   onClose,
   onRecheck,
+  onOpenRevision,
 }: ViolationDrawerProps) {
   const [targetRuleSetId, setTargetRuleSetId] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -224,6 +229,21 @@ export function ViolationDrawer({
                   )}
                   <span>免重解析重检</span>
                 </button>
+                {detail.parse_status === 'success' && (
+                  <button
+                    type="button"
+                    disabled={openingRevision}
+                    onClick={() => onOpenRevision(detail.id)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[#234B7A] bg-white px-2.5 text-xs font-semibold text-[#234B7A] hover:bg-[#EEF3F9] disabled:opacity-55"
+                  >
+                    {openingRevision ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3.5 w-3.5" />
+                    )}
+                    <span>调整论文</span>
+                  </button>
+                )}
               </div>
             </div>
           )}

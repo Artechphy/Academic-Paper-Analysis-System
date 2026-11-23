@@ -12,7 +12,7 @@ import type {
   Verdict,
 } from '../types/api';
 
-const API_BASE = '/api/v1';
+export const API_BASE = '/api/v1';
 
 export class ApiError extends Error {
   status: number;
@@ -46,7 +46,7 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init);
   const text = await response.text();
   let parsed: unknown = null;
@@ -65,19 +65,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function getHealth(): Promise<HealthResponse> {
-  return request<HealthResponse>('/health');
+  return apiRequest<HealthResponse>('/health');
 }
 
 export function listRuleSets(): Promise<RuleSetResponse[]> {
-  return request<RuleSetResponse[]>('/rule-sets');
+  return apiRequest<RuleSetResponse[]>('/rule-sets');
 }
 
 export function getRuleSet(ruleSetId: string): Promise<RuleSetDetail> {
-  return request<RuleSetDetail>(`/rule-sets/${ruleSetId}`);
+  return apiRequest<RuleSetDetail>(`/rule-sets/${ruleSetId}`);
 }
 
 export function createRuleSet(body: RuleSetCreate): Promise<RuleSetDetail> {
-  return request<RuleSetDetail>('/rule-sets', {
+  return apiRequest<RuleSetDetail>('/rule-sets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -88,7 +88,7 @@ export function updateRuleItem(
   ruleItemId: string,
   body: RuleItemUpdate,
 ): Promise<RuleItemResponse> {
-  return request<RuleItemResponse>(`/rule-items/${ruleItemId}`, {
+  return apiRequest<RuleItemResponse>(`/rule-items/${ruleItemId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -109,14 +109,14 @@ export function checkBatch(
   if (trimmed) {
     form.append('batch_name', trimmed);
   }
-  return request<BatchDetail>('/batches/check', {
+  return apiRequest<BatchDetail>('/batches/check', {
     method: 'POST',
     body: form,
   });
 }
 
 export function listBatches(): Promise<BatchSummary[]> {
-  return request<BatchSummary[]>('/batches');
+  return apiRequest<BatchSummary[]>('/batches');
 }
 
 export function getBatch(
@@ -127,18 +127,18 @@ export function getBatch(
   if (params?.verdict) search.set('verdict', params.verdict);
   if (params?.q?.trim()) search.set('q', params.q.trim());
   const qs = search.toString();
-  return request<BatchDetail>(`/batches/${batchId}${qs ? `?${qs}` : ''}`);
+  return apiRequest<BatchDetail>(`/batches/${batchId}${qs ? `?${qs}` : ''}`);
 }
 
 export function getCheckRun(runId: string): Promise<CheckRunDetail> {
-  return request<CheckRunDetail>(`/check-runs/${runId}`);
+  return apiRequest<CheckRunDetail>(`/check-runs/${runId}`);
 }
 
 export function recheckPaper(
   paperId: string,
   ruleSetId: string,
 ): Promise<CheckRunDetail> {
-  return request<CheckRunDetail>(`/papers/${paperId}/recheck`, {
+  return apiRequest<CheckRunDetail>(`/papers/${paperId}/recheck`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rule_set_id: ruleSetId }),
@@ -146,5 +146,5 @@ export function recheckPaper(
 }
 
 export function getStatsOverview(): Promise<StatsOverview> {
-  return request<StatsOverview>('/stats/overview');
+  return apiRequest<StatsOverview>('/stats/overview');
 }

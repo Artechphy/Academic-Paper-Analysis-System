@@ -12,8 +12,10 @@ import {
   listRuleSets,
   recheckPaper,
 } from './api/client';
+import { createOrResumeRevision } from './api/revisions';
 import { KpiBar } from './components/KpiBar';
 import { ResultsTable } from './components/ResultsTable';
+import { RevisionWorkspace } from './components/RevisionWorkspace';
 import { RuleConfigDrawer } from './components/RuleConfigDrawer';
 import { StatsView } from './components/StatsView';
 import { TopBar, type ActiveTab } from './components/TopBar';
@@ -31,6 +33,7 @@ import type {
   StatsOverview,
   Verdict,
 } from './types/api';
+import type { RevisionSessionDetail } from './types/revisions';
 
 interface ToastState {
   kind: 'success' | 'error';
@@ -78,6 +81,11 @@ export default function App() {
   // Stats overview
   const [statsOverview, setStatsOverview] = useState<StatsOverview | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
+
+  // Phase 5 Revision workspace
+  const [activeRevisionSession, setActiveRevisionSession] =
+    useState<RevisionSessionDetail | null>(null);
+  const [openingRevisionRunId, setOpeningRevisionRunId] = useState<string | null>(null);
 
   const showToast = useCallback((kind: 'success' | 'error', message: string) => {
     setToast({ kind, message });
@@ -303,6 +311,20 @@ export default function App() {
     showToast('success', `已克隆并切换至模板「${created.name}」`);
   };
 
+  const handleOpenRevision = async (runId: string) => {
+    setOpeningRevisionRunId(runId);
+    try {
+      const session = await createOrResumeRevision(runId);
+      setViolationDrawerOpen(false);
+      setActiveRevisionSession(session);
+      setActiveTab('workbench');
+    } catch (err) {
+      showToast('error', err instanceof ApiError ? err.message : '打开论文修订工作台失败');
+    } finally {
+      setOpeningRevisionRunId(null);
+    }
+  };
+
   const selectedRuleSet = ruleSets.find((r) => r.id === selectedRuleSetId);
   const backendUnavailable = healthError || health?.status !== 'ok';
 
@@ -310,7 +332,10 @@ export default function App() {
     <div className="min-h-screen bg-[#FAF9F6] text-[#1A2332]">
       <TopBar
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={(tab) => {
+          setActiveRevisionSession(null);
+          setActiveTab(tab);
+        }}
         ruleSets={ruleSets}
         selectedRuleSetId={selectedRuleSetId}
         onSelectRuleSet={setSelectedRuleSetId}
@@ -363,7 +388,14 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'workbench' ? (
+        {activeRevisionSession ? (
+          <RevisionWorkspace
+            session={activeRevisionSession}
+            onSessionChange={setActiveRevisionSession}
+            onBack={() => setActiveRevisionSession(null)}
+            onNotify={showToast}
+          />
+        ) : activeTab === 'workbench' ? (
           <>
             <UploadZone
               selectedRuleSet={selectedRuleSet}
@@ -391,12 +423,14 @@ export default function App() {
               hasActiveFilters={Boolean(verdictFilter || searchQuery.trim())}
               recheckOverrides={recheckOverrides}
               recheckingPaperId={recheckingPaperId}
+              openingRevisionRunId={openingRevisionRunId}
               onResetFilters={() => {
                 setVerdictFilter(null);
                 setSearchQuery('');
               }}
               onInspectRun={(runId) => void handleInspectRun(runId)}
               onQuickRecheck={handleRecheck}
+              onOpenRevision={(runId) => void handleOpenRevision(runId)}
             />
           </>
         ) : (
@@ -422,8 +456,12 @@ export default function App() {
         rechecking={Boolean(
           activeCheckRun && recheckingPaperId === activeCheckRun.paper_id,
         )}
+        openingRevision={Boolean(
+          activeCheckRun && openingRevisionRunId === activeCheckRun.id,
+        )}
         onClose={() => setViolationDrawerOpen(false)}
         onRecheck={handleRecheck}
+        onOpenRevision={(runId) => void handleOpenRevision(runId)}
       />
 
       <RuleConfigDrawer
