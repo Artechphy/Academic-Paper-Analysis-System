@@ -35,7 +35,7 @@
 | **M1 基础设施与数据层** (`541a6f1`) | `docker-compose.yml`（`name: paper-analyzer`，PG 18 卷挂载 `/var/lib/postgresql`）、`backend/pyproject.toml`、`backend/uv.lock`、6 张核心表、Alembic `0001_initial.py`（含触发器 `trg_sync_check_batch_counts` 与分析视图 `v_rule_violation_stats` / `v_batch_summary`）、幂等种子脚本 `seed.py`、FastAPI `/api/v1/health`。 |
 | **M2 解析器与规则引擎** (`487a563`) | 统一 `DocumentIR`、`.docx`（OOXML）与 `.pdf`（PyMuPDF）双解析器、21 条福师大规则与通用规则引擎、样本生成器。原 61 项 pytest 通过。 |
 | **M3 业务服务与完整 REST API** (`92e52e0`) | 完整实现 SPEC 第 7 节全部 11 个 REST 接口、SHA-256 去重存储、事务回滚保护、免重解析重检、SQLite 等价触发器/视图集成测试。原 69 项 pytest 通过。 |
-| **M4 React 前端 + 知网 PDF 解析调优**（本轮完成） | 1. **`.gitignore` 与前端依赖**：忽略 `.pnpm-store/` 与 `input/`；`frontend/pnpm-workspace.yaml` 启用 `esbuild: true` 并完成 `pnpm install --dir frontend`。<br>2. **前端工作台（`frontend/src/`）**：实现完整学术编校工作台（`TopBar`、`UploadZone`、`KpiBar`、`ResultsTable`、`ViolationDrawer` 规则分组聚合与手动复核清单、`RuleConfigDrawer` 实时调参与模板克隆、`StatsView` TOP 10 统计与历史批次汇总）。`pnpm --dir frontend build`（`tsc -b && vite build`）**0 错误通过**。<br>3. **5 篇真实知网硕士论文 PDF 调优（Codex CLI）**：修复 PDF 基线行距容差、嵌入式/乱码宋体映射与混排英文处理、代表性正文页边距采样、装饰性矢量图过滤、跨行参考文献合并、页眉/目录误切换模块及 `cnki_abstract` 识别；新增 [test_pdf_regressions.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/tests/test_pdf_regressions.py) 17 项回归测试。**`backend/.venv/bin/pytest -q` 86 项全部通过**。 |
+| **M4 React 前端 + 知网 PDF 解析调优 + PG 18 全栈验收**（已完成） | 1. **`.gitignore` 与前端依赖**：忽略 `.pnpm-store/`、`input/` 与 `*.tsbuildinfo`；`frontend/pnpm-workspace.yaml` 启用 `esbuild: true` 并完成 `pnpm install --dir frontend`。<br>2. **前端工作台（`frontend/src/`）**：实现完整学术编校工作台（`TopBar`、`UploadZone`、`KpiBar`、`ResultsTable`、`ViolationDrawer` 规则分组聚合与手动复核清单、`RuleConfigDrawer` 实时调参与模板克隆、`StatsView` TOP 10 统计与历史批次汇总）。`pnpm --dir frontend build`（`tsc -b && vite build`）**0 错误通过**。<br>3. **5 篇真实知网硕士论文 PDF 调优（Codex CLI）**：修复 PDF 基线行距容差、嵌入式/乱码宋体映射与混排英文处理、代表性正文页边距采样、装饰性矢量图过滤、跨行参考文献合并、页眉/目录误切换模块及 `cnki_abstract` 识别；新增 [test_pdf_regressions.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/tests/test_pdf_regressions.py) 17 项回归测试。<br>4. **PostgreSQL 18 真库与端到端全栈验收**：`docker compose up -d --wait` 启动 `paper_analyzer_pg18`（健康运行于 `127.0.0.1:55432`），`alembic upgrade head` 与两次 `python -m app.db.seed` 幂等通过；`TEST_DATABASE_URL="postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer" backend/.venv/bin/pytest -q` **86 项全部通过**。浏览器访问 `http://127.0.0.1:5173` 完成 `PG18 已连接`、合成样本（`PASS`/`FAIL`/`ERROR`）、违规抽屉与免重解析重检、21 条规则配置与模板克隆、2 篇真实知网 PDF 批量检测及 `统计洞察` 视图全流程验收，零控制台与接口错误。 |
 
 ### 5 篇真实知网 PDF（`input/pdf/`）调优前后对比（`FJNU_MASTER_RULES`）
 | 样本论文 | 页数 | 调优前违规数 → 调优后违规数 | 说明 |
@@ -66,25 +66,21 @@ Schema 源文件：[rules.py](file:///Users/artechphy/Documents/作业/大三上
 
 ---
 
-## 4. 已知阻塞与恢复操作（待用户处理 Docker 代理后完成真库 E2E）
+## 4. 运行环境状态与日常启动指南
 
-1. **Docker Desktop 拉取 `postgres:18-alpine` 仍被残留代理阻断**：
-   - 本轮状态：Docker Desktop 已启动（Engine `29.5.2`），但运行 `docker compose up -d --wait` 仍报错：  
-     `Error response from daemon: failed to resolve reference "docker.io/library/postgres:18-alpine": failed to do request: Head "https://3l871kwk.mirror.aliyuncs.com/v2/library/postgres/manifests/18-alpine?ns=docker.io": writing response to 3l871kwk.mirror.aliyuncs.com:443: connecting to 127.0.0.1:65533: dial tcp 127.0.0.1:65533: connect: connection refused`
-   - **恢复步骤（请用户在 Docker Desktop Settings → Resources → Proxies 中关闭或清空 `127.0.0.1:65533` 并 Apply & Restart 后依次执行）**：
+1. **Docker PostgreSQL 18 容器**：
+   - `paper_analyzer_pg18`（`postgres:18-alpine`，端口 `55432:5432`）已拉取并初始化完成，Alembic 迁移与 3 套规则模板种子均已落库，真库全量测试（86 项）通过。
+   - 若后续重启宿主机，可执行以下命令拉起数据库或重跑真库测试：
      ```bash
      docker compose up -d --wait
-     cd backend
-     .venv/bin/alembic upgrade head
-     .venv/bin/python -m app.db.seed
-     .venv/bin/python -m app.db.seed
-     TEST_DATABASE_URL="postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer" .venv/bin/pytest -q
+     cd backend && .venv/bin/alembic upgrade head && .venv/bin/python -m app.db.seed
+     TEST_DATABASE_URL="postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer" backend/.venv/bin/pytest -q
      ```
-2. **真库端到端联调启动命令**：
+2. **本地前后端开发启动命令**：
    ```bash
-   # 终端 1（后端）
+   # 终端 1（后端 FastAPI）
    cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-   # 终端 2（前端）
+   # 终端 2（前端 Vite）
    pnpm --dir frontend dev --host 127.0.0.1 --port 5173
    ```
-   打开 `http://127.0.0.1:5173` 后，验证顶部状态指示为 `PG18 已连接`，并测试上传合成样本（`PASS`/`FAIL`/`ERROR`）及 `input/pdf/` 中的真实论文、抽屉详情、规则调参克隆、免重解析重检与统计洞察页。
+   访问 `http://127.0.0.1:5173`，顶部状态显示 `PG18 已连接` 即可正常使用。
