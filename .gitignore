@@ -10,8 +10,10 @@ venv/
 
 # Node / Frontend
 node_modules/
+.pnpm-store/
 frontend/dist/
 frontend/.vite/
+*.tsbuildinfo
 *.local
 
 # Local storage & env
@@ -19,6 +21,7 @@ frontend/.vite/
 backend/.env
 storage/
 backend/storage/
+input/
 *.log
 
 # OS
