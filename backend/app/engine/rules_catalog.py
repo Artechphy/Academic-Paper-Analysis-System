@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import re
 import unicodedata
 
-from app.engine.utils import HAN, SECTION_NAMES, count_chinese_chars, normalize_font_name
+from app.engine.utils import HAN, SECTION_NAMES, chapter_number, count_chinese_chars, normalize_font_name, pdf_page_parities
 from app.parsers.base import CN_KEYWORDS, cover_elements
 
 SECTION = SECTION_NAMES.get
@@ -97,19 +97,25 @@ def _style(allowed, actual, tolerance):
     return "，".join(expected), "，".join(observed)
 
 
-def _typography(paragraph, allowed, tolerance, label, *, runs=None, sample=None):
+def _typography(paragraph, allowed, tolerance, label, *, runs=None, sample=None, chinese_context=None,
+                ignore_scripts=False):
     sample = sample if sample is not None else paragraph
     runs = paragraph.runs if runs is None else runs
     run_rules = {key: value for key, value in allowed.items() if key in {"font_name", "font_size_pt", "bold"}}
+    if chinese_context is None:
+        chinese_context = bool(HAN.search(paragraph.text))
+    chinese_font = normalize_font_name(run_rules.get("font_name")) in {"simsun", "simhei"}
+    latin_rules = {key: value for key, value in run_rules.items() if key != "font_name"}
     entries = []
     for run in runs:
+        if ignore_scripts and run.is_script:
+            continue
         if not any(character.isalnum() for character in run.text):
             continue
-        targets = run_rules
-        if run_rules.get("font_name") in {"simsun", "simhei"} and HAN.search(paragraph.text) and not HAN.search(run.text):
-            targets = {key: value for key, value in run_rules.items() if key != "font_name"}
+        targets = latin_rules if chinese_font and chinese_context and not HAN.search(run.text) else run_rules
         entries.append((targets, run))
-    entries = entries or [(run_rules, sample)]
+    if not entries and not (ignore_scripts and runs and all(run.is_script for run in runs)):
+        entries = [(run_rules, sample)]
     entries.append(({key: value for key, value in allowed.items() if key not in run_rules}, paragraph))
     failures = list(dict.fromkeys(_style(wanted, actual, tolerance) for wanted, actual in entries))
     failures = [(wanted, actual) for wanted, actual in failures if wanted]
@@ -176,7 +182,9 @@ def page_margins(doc, params):
 def line_spacing(doc, params):
     if doc.file_ext == "pdf" and params["pdf_measurement"] != "baseline":
         return None
-    tolerance = params["docx_tolerance_pt"] if doc.file_ext == "docx" else .01
+    tolerance = params["docx_tolerance_pt"]
+    if doc.file_ext == "pdf":
+        tolerance = params.get("pdf_tolerance_pt", tolerance)
     minimum = params["min_pt"]
     paragraphs = [
         p for p in doc.paragraphs if p.text and not p.in_table and p.role != "other"
@@ -185,7 +193,7 @@ def line_spacing(doc, params):
     if not paragraphs:
         return None
     return [Finding(
-        f"行距至少 {minimum:g} pt" + (f"（容差 {tolerance:g} pt）" if doc.file_ext == "docx" else ""),
+        f"行距至少 {minimum:g} pt（容差 {tolerance:g} pt）",
         f"{'基线间距约' if doc.file_ext == 'pdf' else '段落行距'} {p.line_spacing_pt:.2f} pt",
         "请增大段落行距。", _location(p),
     ) for p in paragraphs if p.line_spacing_pt + tolerance < minimum]
@@ -199,29 +207,30 @@ def _header_style(item, params, keys, location):
 
 def header_format(doc, params):
     headers = doc.headers_footers
-    chapters = [p for p in doc.paragraphs if p.role == "chapter_heading"]
     findings = []
     pdf = doc.file_ext == "pdf"
     fields = set(params["pdf_fields"]) if pdf else {"odd_text", "even_text", "font_size_pt", "font_name", "alignment"}
     even_pattern = params.get("even_pattern")
 
     if pdf:
-        body_pages = sorted({p.page_no for p in doc.paragraphs if p.section_key == "body" and p.page_no is not None})
+        chapters = [p for p in doc.paragraphs if p.role in {"chapter_heading", "section_heading"}
+                    and chapter_number(p.text) is not None]
+        body_pages = sorted({p.page_no for p in doc.paragraphs
+                             if p.section_key == "body" and p.page_no is not None and (p.text or p.object_kind)})
         if not body_pages:
             return None
-        for page in body_pages:
+        candidates_by_page = defaultdict(list)
+        for item in headers.odd_headers + headers.even_headers:
+            candidates_by_page[item.page_no].append(item)
+        for page, parity in pdf_page_parities(body_pages, headers.page_numbers):
             location = _location(page=page, section="body")
-            number = next((item for item in headers.page_numbers if item.page_no == page
-                           and item.num_format == "decimal" and item.position == "footer"), None)
-            raw = re.search(r"\d+", number.raw_text) if number else None
-            parity = int(raw[0]) % 2 if raw else page % 2
-            candidates = [item for item in (headers.odd_headers if parity else headers.even_headers)
-                          if item.page_no == page]
+            candidates = candidates_by_page[page]
             chapter = next((p for p in reversed(chapters) if p.page_no is not None and p.page_no <= page), None)
             findings.extend(_header_slot(candidates, params, fields, bool(parity), [chapter] if chapter else [],
                                          location, even_pattern))
         return findings
 
+    chapters = [p for p in doc.paragraphs if p.role == "chapter_heading"]
     body_sections = {p.section_index for p in doc.paragraphs if p.section_key == "body" and p.text}
     targets = [setup for setup in doc.page_setups if setup.section_index in body_sections]
     if not targets:
@@ -450,7 +459,28 @@ def body_typography(doc, params):
             return None
         # Use the most frequent paragraph size as the reference for each run.
         allowed = allowed | {"font_size_pt": Counter(sizes).most_common(1)[0][0]}
-    return [finding for p in paragraphs for finding in _typography(p, allowed, tolerance, "正文")]
+    if doc.file_ext != "pdf":
+        return [finding for p in paragraphs for finding in _typography(p, allowed, tolerance, "正文")]
+
+    groups = defaultdict(list)
+    for paragraph in paragraphs:
+        start = paragraph.paragraph_start_index
+        groups[paragraph.index if start is None else start].append(paragraph)
+    findings = []
+    for lines in groups.values():
+        chinese = any(HAN.search(line.text) for line in lines)
+        group_findings = {}
+        for line in lines:
+            for finding in _typography(line, allowed, tolerance, "正文", chinese_context=chinese,
+                                       ignore_scripts=True):
+                key = (finding.expected, finding.actual)
+                if key in group_findings:
+                    locations = group_findings[key].location
+                    locations.setdefault("paragraph_indices", [locations["paragraph_index"]]).append(line.index)
+                else:
+                    group_findings[key] = finding
+        findings.extend(group_findings.values())
+    return findings
 
 
 def abstract_content(doc, params):
@@ -539,8 +569,13 @@ def figure_table(doc, params):
         continuous = 0
         chapters = defaultdict(int)
         possible = set(params["numbering_modes"])
+        previous_number = None
         for item in items:
             number = unicodedata.normalize("NFKC", item.number_raw)
+            if (doc.file_ext == "pdf" and kind == "table" and number and number == previous_number
+                    and re.search(r"\(\s*continued\s*\)", item.caption_text, re.I)):
+                continue
+            previous_number = number
             single = re.fullmatch(f"({token})", number)
             paired = re.fullmatch(f"({token})[.\u2013\u2014-]({token})", number)
             matches = set()

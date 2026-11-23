@@ -23,6 +23,8 @@ EN_KEYWORDS = re.compile(r"^\s*key\s*words?\s*[:：]?\s*", re.I)
 TOC_PAGE = re.compile(r"(?:\t+|[.．…·]{2,}|\s+)([0-9０-９]+|[IVXLCDMivxlcdmⅠ-ⅿ]+)\s*$")
 CAPTION = re.compile(r"^(图|表|Figure\b|Fig\.|Table\b)\s*((?:\([^)]*\)|[\w]+(?:[.．—–-][\w]+)*))?(?=\s|[:：、.]|$)", re.I)
 CAPTION_COMPACT = re.compile(r"^([图表])\s*([0-9０-９一二三四五六七八九十]+(?:[.．—–-][0-9０-９一二三四五六七八九十]+)*)")
+CAPTION_MENTION = re.compile(r"^(?:所示|可见[，。,.]|显示[了出]|as follows\b|above\b|below\b|shows?\b|"
+                             r"illustrates?\b|demonstrates?\b|indicates?\b|presents?\b|\))", re.I)
 FORMULA_NUMBER = re.compile(r"[（(]([0-9０-９]+(?:[.．—–-][0-9０-９]+)*)[）)]\s*$")
 CONTENT_SECTIONS = {"introduction", "body", "conclusion", "appendix", "references",
                     "achievements", "acknowledgements", "resume"}
@@ -109,7 +111,7 @@ def parse_reference(text: str, index: int) -> ReferenceIR:
     )
 
 
-def caption_parts(text: str) -> tuple[str, str] | None:
+def caption_parts(text: str, *, pdf=False) -> tuple[str, str] | None:
     match = CAPTION_COMPACT.match(text) or CAPTION.match(text)
     if not match:
         # Capture malformed numbering so that it can be reported.
@@ -118,6 +120,8 @@ def caption_parts(text: str) -> tuple[str, str] | None:
         kind = "figure" if match[1].lower().startswith(("图", "fig")) else "table"
         # A phrase such as “图 表明……” or “Figure shows…” is ordinary prose.
         number = match[2] or ""
+        if pdf and CAPTION_MENTION.match(text[match.end():].lstrip()):
+            return None
         if len(number) > 1 and number.isalpha() and not re.fullmatch(r"[IVXLCDM一二三四五六七八九十]+", number, re.I):
             return None
         return kind, number
@@ -151,30 +155,48 @@ def cover_elements(paragraphs: list[ParagraphIR]) -> dict[str, tuple[str, Paragr
     return elements
 
 
-def _classify(document: DocumentIR) -> None:
+def classify_document(document: DocumentIR, *, pdf_headings: set[int] | None = None,
+                      pdf_toc_entries: frozenset[int] | set[int] = frozenset()) -> None:
     current = "cover"
     has_title = False
+    seen = set()
+    pdf = pdf_headings is not None
     for paragraph in document.paragraphs:
         text = paragraph.text.strip()
         style = (paragraph.style_name or "").casefold()
         paragraph.section_key = current
-        if not text or paragraph.in_table and current != "cover":
+        if not text or paragraph.role in {"footnote", "equation_fragment"} or paragraph.in_table and current != "cover":
             continue
         is_toc_style = bool(re.match(r"(?:toc|目录)\s*\d", style))
         looks_like_toc_entry = paragraph.toc_page_number is not None or TOC_PAGE.search(text)
         key = heading_key(text) if len(text) <= 90 else None
         level = heading_level(text, style) if len(text) <= 100 else None
+        if pdf:
+            if paragraph.index not in pdf_headings:
+                key = level = None
+            elif level is not None and level > 1:
+                # A numbered subsection does not start a new thesis module.
+                key = None
+            elif re.fullmatch(r"中\s*文\s*文\s*摘", text) and current in {
+                "cover", "abstract_cn", "abstract_en", "cnki_abstract"
+            }:
+                key = "cnki_abstract" if "abstract_cn" in seen else "abstract_cn"
 
         inline_abstract = INLINE_ABSTRACT.match(text)
-        if current == "toc" and (is_toc_style or looks_like_toc_entry):
+        if current == "toc" and (is_toc_style or looks_like_toc_entry
+                                 or (pdf and paragraph.index in pdf_toc_entries)):
             paragraph.role = "toc_entry"
         elif key:
             current = key
             paragraph.role = "section_heading"
-        elif inline_abstract:
+        elif inline_abstract and (not pdf or current in {"cover", "abstract_cn", "abstract_en", "cnki_abstract"}
+                                  or paragraph.index in pdf_headings):
             current = "abstract_en" if text.casefold().startswith("abstract") else "abstract_cn"
             paragraph.role = "body_text"
         elif level and (current != "cover" or chapter_number(text) is not None):
+            if pdf and level > 1 and current not in CONTENT_SECTIONS:
+                paragraph.role = "toc_entry" if current == "toc" else "body_text"
+                continue
             if level == 1:
                 current = "body"
                 paragraph.role = "chapter_heading"
@@ -203,9 +225,10 @@ def _classify(document: DocumentIR) -> None:
         elif current == "toc":
             paragraph.role = "toc_entry"
         else:
-            parts = caption_parts(text) if current in CONTENT_SECTIONS and len(text) <= 200 else None
+            parts = caption_parts(text, pdf=pdf) if current in CONTENT_SECTIONS and len(text) <= 200 else None
             paragraph.role = f"{parts[0]}_caption" if parts else "body_text"
         paragraph.section_key = current
+        seen.add(current)
 
 
 def _sections(paragraphs: list[ParagraphIR]) -> list[DetectedSectionIR]:
@@ -228,15 +251,31 @@ def _sections(paragraphs: list[ParagraphIR]) -> list[DetectedSectionIR]:
     return [section for section in sections if section.title]
 
 
-def _figures_tables(paragraphs: list[ParagraphIR]) -> list[FigureTableIR]:
+def _figures_tables(paragraphs: list[ParagraphIR], *, pdf=False) -> list[FigureTableIR]:
     result = []
     chapter = None
     used_objects = set()
-    visible = [p for p in paragraphs if not p.in_table and (p.text.strip() or p.object_kind or p.has_image)]
+    visible = [p for p in paragraphs if not p.in_table and p.role not in {"footnote", "equation_fragment"}
+               and (p.text.strip() or p.object_kind or p.has_image)]
+    if pdf:
+        captions = {"figure_caption", "table_caption"}
+        merged = []
+        for paragraph in visible:
+            previous = merged[-1] if merged else None
+            if (paragraph.role in captions and previous is not None and previous.role == paragraph.role
+                    and previous.page_no == paragraph.page_no
+                    and bool(re.match(r"^[图表]", previous.text)) != bool(re.match(r"^[图表]", paragraph.text))):
+                parts = caption_parts(paragraph.text, pdf=True)
+                if parts and parts[1] and caption_parts(previous.text, pdf=True) == parts:
+                    continue
+            merged.append(paragraph)
+        visible = merged
     object_chapters = {}
     for index, paragraph in enumerate(visible):
-        if paragraph.role == "chapter_heading":
-            chapter = chapter_number(paragraph.text)
+        if paragraph.role in {"chapter_heading", "section_heading"}:
+            number = chapter_number(paragraph.text)
+            if number is not None:
+                chapter = number
         if paragraph.object_kind in {"figure", "table"} and paragraph.section_key in CONTENT_SECTIONS:
             object_chapters[paragraph.index] = (paragraph, chapter)
         if paragraph.object_kind == "formula":
@@ -247,7 +286,7 @@ def _figures_tables(paragraphs: list[ParagraphIR]) -> list[FigureTableIR]:
             ))
         if paragraph.role not in {"figure_caption", "table_caption"}:
             continue
-        parts = caption_parts(paragraph.text.strip())
+        parts = caption_parts(paragraph.text.strip(), pdf=pdf)
         if parts is None:
             continue
         kind, number = parts
@@ -278,10 +317,14 @@ def _figures_tables(paragraphs: list[ParagraphIR]) -> list[FigureTableIR]:
 
 
 def analyze_document(document: DocumentIR, *, text_page_ratio: float = 1.0) -> DocumentIR:
-    _classify(document)
+    classify_document(document)
+    return summarize_document(document, text_page_ratio=text_page_ratio)
+
+
+def summarize_document(document: DocumentIR, *, text_page_ratio: float = 1.0) -> DocumentIR:
     paragraphs = document.paragraphs
     document.sections = _sections(paragraphs)
-    document.figures_tables = _figures_tables(paragraphs)
+    document.figures_tables = _figures_tables(paragraphs, pdf=document.file_ext == "pdf")
     document.references = [parse_reference(p.text, p.index) for p in paragraphs if p.role == "reference_entry"]
     stats = DocumentStatsIR(text_page_ratio=text_page_ratio)
     for paragraph in paragraphs:

@@ -21,6 +21,7 @@ class TextStyleIR(IRModel):
 class TextRunIR(TextStyleIR):
     text: str
     font_name_latin: str | None = None
+    is_script: bool = False
 
 
 class PageSetupIR(IRModel):
@@ -67,6 +68,7 @@ class HeaderFooterIR(IRModel):
 class ParagraphIR(TextStyleIR):
     index: int
     page_no: int | None = None
+    paragraph_start_index: int | None = None
     section_key: str | None = None
     role: str = "other"
     text: str
