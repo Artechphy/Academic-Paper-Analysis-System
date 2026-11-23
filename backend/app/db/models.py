@@ -173,3 +173,57 @@ class CheckViolation(Base):
     expected: Mapped[str] = mapped_column(Text)
     actual: Mapped[str] = mapped_column(Text)
     message: Mapped[str] = mapped_column(Text)
+
+
+class RevisionSession(Base):
+    __tablename__ = "revision_sessions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    check_run_id: Mapped[UUID] = mapped_column(ForeignKey("check_runs.id", ondelete="CASCADE"))
+    paper_id: Mapped[UUID] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"))
+    rule_set_id: Mapped[UUID] = mapped_column(ForeignKey("rule_sets.id"))
+    target_file_name: Mapped[str] = mapped_column(String(255))
+    working_docx_path: Mapped[str | None] = mapped_column(Text)
+    annotated_pdf_path: Mapped[str | None] = mapped_column(Text)
+    annotated_page_mode: Mapped[str | None] = mapped_column(String(16))
+    version: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    comparison_ready: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    llm_used: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    llm_model: Mapped[str | None] = mapped_column(String(64))
+    verdict: Mapped[str] = mapped_column(String(16))
+    score: Mapped[Decimal] = mapped_column(Numeric(5, 2), server_default=text("100.00"))
+    error_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    warning_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    original_error_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    current_ir: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    current_violations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    rulebook: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    changes: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    modified_paragraphs: Mapped[list[int]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("verdict IN ('pass', 'fail', 'error')", name="ck_revision_sessions_verdict"),
+        CheckConstraint("annotated_page_mode IN ('issues_only', 'full')", name="ck_revision_sessions_page_mode"),
+        Index("ix_revision_sessions_run_updated", check_run_id, updated_at.desc()),
+    )
+
+
+class RevisionFeedback(Base):
+    __tablename__ = "revision_feedbacks"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("revision_sessions.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(Integer)
+    author: Mapped[str] = mapped_column(String(16))
+    rule_code: Mapped[str | None] = mapped_column(String(64))
+    paragraph_index: Mapped[int | None] = mapped_column(Integer)
+    instruction: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("author IN ('user', 'agent')", name="ck_revision_feedbacks_author"),
+        Index("ix_revision_feedbacks_session_created", session_id, created_at),
+    )

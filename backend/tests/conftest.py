@@ -142,6 +142,7 @@ def client(db_sessions, tmp_path, monkeypatch):
             yield session
 
     monkeypatch.setattr(settings, "storage_dir", tmp_path / "storage")
+    monkeypatch.setattr(settings, "revisions_dir", tmp_path / "revisions")
     monkeypatch.setitem(app.dependency_overrides, get_db, override_db)
     with TestClient(app) as test_client:
         yield test_client

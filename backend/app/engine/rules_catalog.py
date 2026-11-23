@@ -35,13 +35,15 @@ class Finding:
 
 def _location(paragraph=None, *, page=None, section=None, section_index=None, excerpt=None):
     if paragraph is not None:
-        page = paragraph.page_no
-        section = paragraph.section_key
-        section_index = paragraph.section_index
-        excerpt = paragraph.text
+        page = getattr(paragraph, "page_no", None) or page
+        section = getattr(paragraph, "section_key", None) or section
+        section_index = getattr(paragraph, "section_index", section_index)
+        excerpt = getattr(paragraph, "text", None) or getattr(paragraph, "raw_text", None) or excerpt
+    bbox = getattr(paragraph, "bbox", None)
     values = {
-        "page": page, "paragraph_index": paragraph.index if paragraph is not None else None,
+        "page": page, "paragraph_index": getattr(paragraph, "index", None),
         "section": section, "section_index": section_index, "excerpt": excerpt[:100] if excerpt else None,
+        "bbox": list(bbox) if bbox is not None else None,
     }
     return {key: value for key, value in values.items() if value is not None}
 
@@ -230,7 +232,9 @@ def header_format(doc, params):
                                          location, even_pattern))
         return findings
 
-    chapters = [p for p in doc.paragraphs if p.role == "chapter_heading"]
+    chapters = [p for p in doc.paragraphs if p.role == "chapter_heading" or (
+        p.role == "section_heading" and p.section_key == "body" and chapter_number(p.text) is not None
+    )]
     body_sections = {p.section_index for p in doc.paragraphs if p.section_key == "body" and p.text}
     targets = [setup for setup in doc.page_setups if setup.section_index in body_sections]
     if not targets:
@@ -278,9 +282,9 @@ def _header_slot(items, params, fields, odd, chapters, location, even_pattern):
                        or re.fullmatch(even_pattern, _compact(item.text))]
         if not matches:
             return [Finding(f"{side}{expected}", f"页眉文字为「{selected.text}」", f"请修改{side}页眉文字。",
-                            location | {"excerpt": selected.text[:100]})]
+                            location | _location(selected))]
         selected = matches[0]
-    return _header_style(selected, params, fields, location | {"excerpt": selected.text[:100]})
+    return _header_style(selected, params, fields, location | _location(selected))
 
 
 def double_border(doc, params):
@@ -291,7 +295,7 @@ def double_border(doc, params):
         f"页眉下边框为{style}，线宽 {params['width_pt']:g} pt（容差 ±{params['tolerance_pt']:g} pt）",
         f"下边框样式为{item.bottom_border_style or '无'}，线宽 {_value(item.bottom_border_pt, ' pt')}",
         "请调整页眉下边框的线型及宽度。",
-        _location(section_index=item.section_index, excerpt=item.text),
+        _location(item),
     ) for item in items if item.bottom_border_style != params["style"]
         or not _near(item.bottom_border_pt, params["width_pt"], params["tolerance_pt"])]
 
@@ -337,6 +341,8 @@ def page_numbers(doc, params):
                 variant_text = {"first": "首页", "even": "偶数页", "default": ""}[variant]
                 location = _location(paragraph)
                 if pdf:
+                    location.pop("bbox", None)
+                    location.update(_location(item) if item else {})
                     location["page"] = index
                 result.append(Finding(
                     f"{variant_text}{POSITIONS.get(params['position'], params['position'])}页码为"
@@ -369,6 +375,7 @@ def required_sections(doc, params):
 
 
 def section_order(doc, params):
+    paragraphs = {p.index: p for p in doc.paragraphs}
     order = {key: i for i, key in enumerate(params["section_order"])}
     last = None
     results = []
@@ -381,8 +388,9 @@ def section_order(doc, params):
                 f"{SECTION(key, key)}位于{SECTION(last, last)}之前",
                 f"{SECTION(key, key)}出现在{SECTION(last, last)}之后",
                 "请按规范重新排列文档模块。",
-                {"section": key, "paragraph_index": section.start_paragraph_index,
-                 **_location(page=section.page_start, excerpt=section.title)},
+                _location(paragraphs.get(section.start_paragraph_index),
+                          page=section.page_start, section=key, excerpt=section.title)
+                | {"paragraph_index": section.start_paragraph_index},
             ))
         else:
             last = key

@@ -39,6 +39,7 @@ class PageSetupIR(IRModel):
 
 class HeaderItemIR(TextStyleIR):
     text: str
+    bbox: tuple[float, float, float, float] | None = None
     alignment: Alignment | None = None
     bottom_border_style: str | None = None
     bottom_border_pt: float | None = None
@@ -50,6 +51,7 @@ class HeaderItemIR(TextStyleIR):
 
 class PageNumberIR(IRModel):
     section_index: int | None = None
+    bbox: tuple[float, float, float, float] | None = None
     page_no: int | None = None
     num_format: NumberFormat = "none"
     alignment: Alignment | None = None
@@ -67,6 +69,7 @@ class HeaderFooterIR(IRModel):
 
 class ParagraphIR(TextStyleIR):
     index: int
+    bbox: tuple[float, float, float, float] | None = None
     page_no: int | None = None
     paragraph_start_index: int | None = None
     section_key: str | None = None
@@ -99,6 +102,7 @@ class DetectedSectionIR(IRModel):
 
 class FigureTableIR(IRModel):
     kind: Literal["figure", "table", "formula"]
+    bbox: tuple[float, float, float, float] | None = None
     caption_text: str
     number_raw: str
     paragraph_index: int

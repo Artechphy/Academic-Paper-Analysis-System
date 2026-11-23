@@ -162,6 +162,8 @@ def classify_document(document: DocumentIR, *, pdf_headings: set[int] | None = N
     seen = set()
     pdf = pdf_headings is not None
     for paragraph in document.paragraphs:
+        if not pdf:
+            paragraph.role = "other"
         text = paragraph.text.strip()
         style = (paragraph.style_name or "").casefold()
         paragraph.section_key = current
@@ -282,7 +284,7 @@ def _figures_tables(paragraphs: list[ParagraphIR], *, pdf=False) -> list[FigureT
             number = FORMULA_NUMBER.search(paragraph.text)
             result.append(FigureTableIR(
                 kind="formula", caption_text=paragraph.text, number_raw=number[1] if number else "",
-                paragraph_index=paragraph.index, alignment=paragraph.alignment, chapter_index=chapter,
+                paragraph_index=paragraph.index, alignment=paragraph.alignment, chapter_index=chapter, bbox=paragraph.bbox,
             ))
         if paragraph.role not in {"figure_caption", "table_caption"}:
             continue
@@ -305,12 +307,12 @@ def _figures_tables(paragraphs: list[ParagraphIR], *, pdf=False) -> list[FigureT
                 break
         result.append(FigureTableIR(
             kind=kind, caption_text=paragraph.text, number_raw=number, paragraph_index=paragraph.index,
-            alignment=paragraph.alignment, relative_position=position, chapter_index=chapter,
+            alignment=paragraph.alignment, relative_position=position, chapter_index=chapter, bbox=paragraph.bbox,
         ))
     for index, (paragraph, chapter) in object_chapters.items():
         if index not in used_objects:
             result.append(FigureTableIR(
-                kind=paragraph.object_kind, caption_text="", number_raw="", paragraph_index=index,
+                kind=paragraph.object_kind, caption_text="", number_raw="", paragraph_index=index, bbox=paragraph.bbox,
                 alignment=paragraph.alignment, chapter_index=chapter,
             ))
     return sorted(result, key=lambda item: item.paragraph_index)

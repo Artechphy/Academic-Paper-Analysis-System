@@ -89,11 +89,16 @@ def _set_line_style(paragraph):
     paragraph.font_name_latin = latin.font_name_latin if latin else main.font_name_latin
 
 
+def _bbox(box):
+    return tuple(round(value, 2) for value in box)
+
+
 def _join_lines(anchor, line, *, separator=" "):
     first, second = anchor.paragraph, line.paragraph
     first.text += separator + second.text
     first.runs.extend(second.runs)
     anchor.box |= line.box
+    first.bbox = _bbox(anchor.box)
     _set_line_style(first)
 
 
@@ -133,7 +138,7 @@ def _lines(page, aliases=None):
             number = FORMULA_NUMBER.search(text)
             formula = number and re.search(r"[=∑∫≈≤≥]", text[:number.start()])
             paragraph = ParagraphIR(
-                index=0, page_no=page.number + 1, text=text, alignment=_alignment(box, width),
+                index=0, page_no=page.number + 1, text=text, bbox=_bbox(box), alignment=_alignment(box, width),
                 runs=runs, object_kind="formula" if formula else None,
             )
             _set_line_style(paragraph)
@@ -258,7 +263,7 @@ def _objects(page, lines, image_boxes, drawings):
                for line in lines):
             continue
         lines.append(_Line(box, box.y0, ParagraphIR(
-            index=0, page_no=page.number + 1, text="", has_image=kind == "figure",
+            index=0, page_no=page.number + 1, text="", bbox=_bbox(box), has_image=kind == "figure",
             object_kind=kind, alignment=_alignment(box, width),
         )))
     return sorted(lines, key=lambda line: (round(line.box.y0, 1), line.box.x0))
@@ -268,7 +273,7 @@ def _page_number(line, position):
     p = line.paragraph
     return PageNumberIR(
         page_no=p.page_no, num_format=page_number_format(p.text), raw_text=p.text,
-        position=position, alignment=p.alignment,
+        position=position, alignment=p.alignment, bbox=p.bbox,
     )
 
 
@@ -308,7 +313,7 @@ def _add_page(page, result, font_cache):
             continue
         headers.default_headers.append(HeaderItemIR(
             text=p.text, font_name=p.font_name, font_size_pt=p.font_size_pt, bold=p.bold,
-            alignment=p.alignment, page_no=page_no, runs=p.runs,
+            alignment=p.alignment, page_no=page_no, runs=p.runs, bbox=p.bbox,
         ))
 
     headers.page_numbers.extend(numbers or [PageNumberIR(page_no=page_no)])
@@ -476,6 +481,7 @@ def _mark_body_paragraphs(lines, width):
                  and p.alignment != "right")
         if wraps:
             p.paragraph_start_index = anchor.index
+            anchor.bbox = _bbox(pymupdf.Rect(anchor.bbox) | line.box)
         else:
             anchor = p
         previous = line
@@ -497,6 +503,7 @@ def _merge_keyword_lines(lines, width):
             separator = "" if HAN.search(anchor.text[-1:]) and HAN.match(p.text) else " "
             anchor.text += separator + p.text
             anchor.runs.extend(p.runs)
+            anchor.bbox = _bbox(pymupdf.Rect(anchor.bbox) | continuation.box)
             p.text, p.runs, p.role = "", [], "other"
             previous = continuation
 
@@ -532,6 +539,9 @@ def _merge_reference_lines(result, lines_by_page):
                     separator = "" if url_wrap or HAN.search(first.text[-1:]) and HAN.match(p.text) else " "
                     first.text += separator + p.text
                     first.runs.extend(p.runs)
+                    # An annotation on the first page can only enclose lines on that page.
+                    if first.page_no == p.page_no:
+                        first.bbox = _bbox(pymupdf.Rect(first.bbox) | line.box)
                     p.text, p.runs, p.role = "", [], "other"
                     previous, right = line, page_right
                     continue
