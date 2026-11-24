@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, X } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Menu,
+  Plus,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import {
   ApiError,
   checkBatch,
@@ -13,13 +20,13 @@ import {
   recheckPaper,
 } from './api/client';
 import { createOrResumeRevision } from './api/revisions';
-import { KpiBar } from './components/KpiBar';
+import { AppSidebar, type ActiveTab } from './components/AppSidebar';
+import { BatchOverviewBar } from './components/BatchOverviewBar';
 import { ResultsTable } from './components/ResultsTable';
 import { RevisionWorkspace } from './components/RevisionWorkspace';
-import { RuleConfigDrawer } from './components/RuleConfigDrawer';
+import { RuleTemplatesView } from './components/RuleTemplatesView';
 import { StatsView } from './components/StatsView';
-import { TopBar, type ActiveTab } from './components/TopBar';
-import { UploadZone } from './components/UploadZone';
+import { EmptyBatchCard, UploadModal } from './components/UploadModal';
 import { ViolationDrawer } from './components/ViolationDrawer';
 import type {
   BatchDetail,
@@ -34,6 +41,7 @@ import type {
   Verdict,
 } from './types/api';
 import type { RevisionSessionDetail } from './types/revisions';
+import { formatDateTime } from './utils/format';
 
 interface ToastState {
   kind: 'success' | 'error';
@@ -47,6 +55,8 @@ function toSummary(detail: CheckRunDetail): CheckRunSummary {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('workbench');
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
 
   // Health
@@ -54,10 +64,9 @@ export default function App() {
   const [healthError, setHealthError] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
 
-  // Rule sets & Rule config drawer
+  // Rule sets & Rule templates view
   const [ruleSets, setRuleSets] = useState<RuleSetResponse[]>([]);
   const [selectedRuleSetId, setSelectedRuleSetId] = useState('');
-  const [ruleDrawerOpen, setRuleDrawerOpen] = useState(false);
   const [ruleSetDetail, setRuleSetDetail] = useState<RuleSetDetail | null>(null);
   const [loadingRuleDetail, setLoadingRuleDetail] = useState(false);
 
@@ -82,7 +91,7 @@ export default function App() {
   const [statsOverview, setStatsOverview] = useState<StatsOverview | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
 
-  // Phase 5 Revision workspace
+  // Revision studio
   const [activeRevisionSession, setActiveRevisionSession] =
     useState<RevisionSessionDetail | null>(null);
   const [openingRevisionRunId, setOpeningRevisionRunId] = useState<string | null>(null);
@@ -187,9 +196,9 @@ export default function App() {
     };
   }, [selectedBatchId, verdictFilter, debouncedQuery, showToast]);
 
-  // Load rule set detail when opening rule config drawer or switching selected rule set while open
+  // Load rule set detail when viewing RuleTemplatesView or switching selected rule set
   useEffect(() => {
-    if (!ruleDrawerOpen || !selectedRuleSetId) return;
+    if (activeTab !== 'rules' || !selectedRuleSetId) return;
     let cancelled = false;
     setLoadingRuleDetail(true);
     void (async () => {
@@ -207,9 +216,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [ruleDrawerOpen, selectedRuleSetId, showToast]);
+  }, [activeTab, selectedRuleSetId, showToast]);
 
   const handleSelectBatch = (batchId: string) => {
+    setViolationDrawerOpen(false);
     setRecheckOverrides({});
     setSelectedBatchId(batchId);
   };
@@ -225,6 +235,7 @@ export default function App() {
       setDebouncedQuery('');
       setBatchDetail(created);
       setSelectedBatchId(created.id);
+      setActiveTab('workbench');
 
       const summary: BatchSummary = {
         id: created.id,
@@ -317,7 +328,6 @@ export default function App() {
       const session = await createOrResumeRevision(runId);
       setViolationDrawerOpen(false);
       setActiveRevisionSession(session);
-      setActiveTab('workbench');
     } catch (err) {
       showToast('error', err instanceof ApiError ? err.message : '打开论文修订工作台失败');
     } finally {
@@ -325,128 +335,225 @@ export default function App() {
     }
   };
 
-  const selectedRuleSet = ruleSets.find((r) => r.id === selectedRuleSetId);
-  const backendUnavailable = healthError || health?.status !== 'ok';
+  const backendUnavailable = healthError || (health !== null && health.status !== 'ok');
+  const activeBatchSummary = batches.find((b) => b.id === selectedBatchId);
+  const activeBatchRuleSetName = activeBatchSummary
+    ? (ruleSets.find((r) => r.id === activeBatchSummary.rule_set_id)?.name ?? null)
+    : null;
+
+  const toastNode = toast && (
+    <div
+      role="status"
+      className={`fixed right-5 bottom-5 z-50 flex max-w-md items-center gap-2.5 rounded-xl border px-4 py-3 text-xs font-medium shadow-lg ${
+        toast.kind === 'success'
+          ? 'border-[#BBF7D0] bg-[#ECFDF5] text-[#15803D]'
+          : 'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]'
+      }`}
+    >
+      {toast.kind === 'success' ? (
+        <CheckCircle2 className="h-4 w-4 shrink-0" />
+      ) : (
+        <AlertCircle className="h-4 w-4 shrink-0" />
+      )}
+      <span className="flex-1">{toast.message}</span>
+      <button
+        type="button"
+        onClick={() => setToast(null)}
+        aria-label="关闭通知"
+        className="rounded p-0.5 opacity-70 hover:opacity-100"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+
+  // Immersive Full-Screen Studio Mode
+  if (activeRevisionSession) {
+    return (
+      <>
+        <RevisionWorkspace
+          session={activeRevisionSession}
+          onSessionChange={setActiveRevisionSession}
+          onBack={() => setActiveRevisionSession(null)}
+          onNotify={showToast}
+        />
+        {toastNode}
+      </>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#FAF9F6] text-[#1A2332]">
-      <TopBar
+    <div className="flex min-h-screen bg-white text-[#18181B]">
+      <AppSidebar
         activeTab={activeTab}
         onTabChange={(tab) => {
-          setActiveRevisionSession(null);
+          setViolationDrawerOpen(false);
           setActiveTab(tab);
         }}
-        ruleSets={ruleSets}
-        selectedRuleSetId={selectedRuleSetId}
-        onSelectRuleSet={setSelectedRuleSetId}
-        onOpenRuleConfig={() => setRuleDrawerOpen(true)}
+        batches={batches}
+        selectedBatchId={selectedBatchId}
+        onSelectBatch={handleSelectBatch}
         health={health}
         healthError={healthError}
         checkingHealth={checkingHealth}
         onRefreshHealth={() => void refreshHealth()}
+        mobileOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
       />
 
-      {/* Toast Notification */}
-      {toast && (
-        <div
-          role="status"
-          className={`fixed right-5 bottom-5 z-50 flex max-w-md items-center gap-2.5 rounded-xl border px-4 py-3 text-xs font-medium shadow-lg ${
-            toast.kind === 'success'
-              ? 'border-[#BBF7D0] bg-[#ECFDF5] text-[#15803D]'
-              : 'border-[#FECACA] bg-[#FEF2F2] text-[#B91C1C]'
-          }`}
-        >
-          {toast.kind === 'success' ? (
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-          ) : (
-            <AlertCircle className="h-4 w-4 shrink-0" />
-          )}
-          <span className="flex-1">{toast.message}</span>
-          <button
-            type="button"
-            onClick={() => setToast(null)}
-            className="rounded p-0.5 opacity-70 hover:opacity-100"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      <main className="mx-auto max-w-[1380px] space-y-5 px-4 py-5 sm:px-6">
-        {backendUnavailable && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
-            <span>
-              后端 API 或 PostgreSQL 18 尚未连接，请确认服务已在 <code className="font-mono">127.0.0.1:8000</code> 运行。
-            </span>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Crisp 56px Page Header */}
+        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[#E8E6E1] bg-white/95 px-4 backdrop-blur-sm sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
-              onClick={() => void refreshHealth()}
-              className="font-semibold text-[#B45309] underline underline-offset-2"
+              onClick={() => setMobileSidebarOpen(true)}
+              aria-label="打开导航栏"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#E8E6E1] text-[#52525B] hover:bg-[#F7F7F5] hover:text-[#18181B] lg:hidden"
             >
-              重新检查
+              <Menu className="h-4 w-4" />
             </button>
+
+            {activeTab === 'workbench' ? (
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-semibold text-[#18181B]">
+                  {activeBatchSummary ? activeBatchSummary.name : '检测工作台'}
+                </h1>
+                {activeBatchSummary && (
+                  <p className="truncate text-[11px] text-[#71717A]">
+                    {activeBatchRuleSetName ? `${activeBatchRuleSetName} · ` : ''}
+                    {formatDateTime(activeBatchSummary.created_at)}
+                  </p>
+                )}
+              </div>
+            ) : activeTab === 'rules' ? (
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-semibold text-[#18181B]">规则模板配置</h1>
+                <p className="truncate text-[11px] text-[#71717A]">
+                  管理学位论文格式规则、严重级别与参数阈值
+                </p>
+              </div>
+            ) : (
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-semibold text-[#18181B]">统计洞察</h1>
+                <p className="truncate text-[11px] text-[#71717A]">
+                  跨批次合规趋势与高频格式违规排行
+                </p>
+              </div>
+            )}
           </div>
-        )}
 
-        {activeRevisionSession ? (
-          <RevisionWorkspace
-            session={activeRevisionSession}
-            onSessionChange={setActiveRevisionSession}
-            onBack={() => setActiveRevisionSession(null)}
-            onNotify={showToast}
-          />
-        ) : activeTab === 'workbench' ? (
-          <>
-            <UploadZone
-              selectedRuleSet={selectedRuleSet}
-              submitting={submittingBatch}
-              disabled={backendUnavailable}
-              onSubmitBatch={handleSubmitBatch}
-            />
+          <div className="flex shrink-0 items-center gap-2">
+            {activeTab === 'workbench' && (
+              <button
+                type="button"
+                onClick={() => setUploadModalOpen(true)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1E3A5F] px-3 text-xs font-semibold text-white transition-colors hover:bg-[#162C49]"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>新建检测</span>
+              </button>
+            )}
 
-            <KpiBar
-              batches={batches}
-              selectedBatchId={selectedBatchId}
-              onSelectBatch={handleSelectBatch}
-              batchDetail={batchDetail}
-              verdictFilter={verdictFilter}
-              onVerdictFilterChange={setVerdictFilter}
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
-            />
+            {activeTab === 'stats' && (
+              <button
+                type="button"
+                onClick={() => void refreshStats()}
+                disabled={loadingStats}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#E2E0DA] bg-white px-3 text-xs font-medium text-[#18181B] hover:bg-[#F7F7F5] disabled:opacity-55"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loadingStats ? 'animate-spin' : ''}`} />
+                <span>刷新统计</span>
+              </button>
+            )}
+          </div>
+        </header>
 
-            <ResultsTable
-              results={batchDetail?.results ?? []}
+        {/* Scrollable Content Workspace */}
+        <main className="mx-auto w-full max-w-[1220px] flex-1 space-y-5 px-4 py-5 sm:px-6">
+          {backendUnavailable && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5 text-xs text-[#92400E]">
+              <span>
+                后端 API 或 PostgreSQL 18 尚未连接，请确认服务已在{' '}
+                <code className="font-mono">127.0.0.1:8000</code> 运行。
+              </span>
+              <button
+                type="button"
+                onClick={() => void refreshHealth()}
+                className="font-semibold text-[#B45309] underline underline-offset-2"
+              >
+                重新检查
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'workbench' ? (
+            batches.length === 0 && !loadingBatch ? (
+              <EmptyBatchCard onOpenUpload={() => setUploadModalOpen(true)} />
+            ) : (
+              <>
+                <BatchOverviewBar
+                  batchDetail={batchDetail}
+                  verdictFilter={verdictFilter}
+                  onVerdictFilterChange={setVerdictFilter}
+                  searchQuery={searchQuery}
+                  onSearchQueryChange={setSearchQuery}
+                />
+
+                <ResultsTable
+                  results={batchDetail?.results ?? []}
+                  ruleSets={ruleSets}
+                  loading={loadingBatch}
+                  hasBatch={Boolean(selectedBatchId)}
+                  hasActiveFilters={Boolean(verdictFilter || searchQuery.trim())}
+                  recheckOverrides={recheckOverrides}
+                  recheckingPaperId={recheckingPaperId}
+                  openingRevisionRunId={openingRevisionRunId}
+                  onResetFilters={() => {
+                    setVerdictFilter(null);
+                    setSearchQuery('');
+                  }}
+                  onInspectRun={(runId) => void handleInspectRun(runId)}
+                  onQuickRecheck={handleRecheck}
+                  onOpenRevision={(runId) => void handleOpenRevision(runId)}
+                />
+              </>
+            )
+          ) : activeTab === 'rules' ? (
+            <RuleTemplatesView
               ruleSets={ruleSets}
-              loading={loadingBatch}
-              hasBatch={Boolean(selectedBatchId)}
-              hasActiveFilters={Boolean(verdictFilter || searchQuery.trim())}
-              recheckOverrides={recheckOverrides}
-              recheckingPaperId={recheckingPaperId}
-              openingRevisionRunId={openingRevisionRunId}
-              onResetFilters={() => {
-                setVerdictFilter(null);
-                setSearchQuery('');
-              }}
-              onInspectRun={(runId) => void handleInspectRun(runId)}
-              onQuickRecheck={handleRecheck}
-              onOpenRevision={(runId) => void handleOpenRevision(runId)}
+              selectedRuleSetId={selectedRuleSetId}
+              onSelectRuleSet={setSelectedRuleSetId}
+              ruleSetDetail={ruleSetDetail}
+              loading={loadingRuleDetail}
+              onRuleUpdated={handleRuleUpdated}
+              onRuleSetCreated={handleRuleSetCreated}
             />
-          </>
-        ) : (
-          <StatsView
-            overview={statsOverview}
-            batches={batches}
-            ruleSets={ruleSets}
-            loading={loadingStats}
-            onRefresh={() => void refreshStats()}
-            onOpenBatch={(batchId) => {
-              handleSelectBatch(batchId);
-              setActiveTab('workbench');
-            }}
-          />
-        )}
-      </main>
+          ) : (
+            <StatsView
+              overview={statsOverview}
+              batches={batches}
+              ruleSets={ruleSets}
+              loading={loadingStats}
+              onOpenBatch={(batchId) => {
+                handleSelectBatch(batchId);
+                setActiveTab('workbench');
+              }}
+            />
+          )}
+        </main>
+      </div>
+
+      <UploadModal
+        open={uploadModalOpen}
+        ruleSets={ruleSets}
+        selectedRuleSetId={selectedRuleSetId}
+        onSelectRuleSet={setSelectedRuleSetId}
+        submitting={submittingBatch}
+        disabled={backendUnavailable}
+        onClose={() => setUploadModalOpen(false)}
+        onSubmitBatch={handleSubmitBatch}
+      />
 
       <ViolationDrawer
         open={violationDrawerOpen}
@@ -464,14 +571,7 @@ export default function App() {
         onOpenRevision={(runId) => void handleOpenRevision(runId)}
       />
 
-      <RuleConfigDrawer
-        open={ruleDrawerOpen}
-        loading={loadingRuleDetail}
-        ruleSet={ruleSetDetail}
-        onClose={() => setRuleDrawerOpen(false)}
-        onRuleUpdated={handleRuleUpdated}
-        onRuleSetCreated={handleRuleSetCreated}
-      />
+      {toastNode}
     </div>
   );
 }

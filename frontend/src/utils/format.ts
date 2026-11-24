@@ -72,19 +72,19 @@ export const VERDICT_META: Record<
     label: '格式合格',
     shortLabel: '合格',
     badgeClass: 'bg-[#ECFDF5] text-[#15803D] border-[#BBF7D0]',
-    dotClass: 'bg-[#15803D]',
+    dotClass: 'bg-[#16A34A]',
   },
   fail: {
     label: '格式有问题',
     shortLabel: '有问题',
     badgeClass: 'bg-[#FEF2F2] text-[#B91C1C] border-[#FECACA]',
-    dotClass: 'bg-[#B91C1C]',
+    dotClass: 'bg-[#DC2626]',
   },
   error: {
     label: '解析异常',
     shortLabel: '异常',
     badgeClass: 'bg-[#FFFBEB] text-[#B45309] border-[#FDE68A]',
-    dotClass: 'bg-[#B45309]',
+    dotClass: 'bg-[#D97706]',
   },
 };
 

@@ -10,8 +10,8 @@
   }
 
   body {
-    background-color: #faf9f6;
-    color: #1a2332;
+    background-color: #ffffff;
+    color: #18181b;
   }
 }
 
@@ -19,7 +19,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Subtle archival scrollbar for drawers and tables */
+/* Subtle ultra-thin scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -30,10 +30,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d5d0c7;
+  background: #d8d5ce;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #b9b2a6;
+  background: #b8b3a8;
 }

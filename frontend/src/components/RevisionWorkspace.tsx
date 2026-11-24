@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  ChevronDown,
   Columns2,
   Download,
   FileCheck,
   FileDown,
   Loader2,
-  MessageSquarePlus,
-  Send,
   Settings2,
   Sparkles,
   Square,
@@ -88,16 +87,15 @@ export function RevisionWorkspace({
     remainingCount: number;
   } | null>(null);
 
-  // Document settings strip
+  // Header Popovers
+  const [activePopover, setActivePopover] = useState<'settings' | 'export' | null>(null);
+
   const hasGlobalLayoutIssues = session.rulebook.some(
     (r) =>
       r.status === 'open' &&
       ['FILE_NAME_PATTERN', 'PAGE_SIZE_A4', 'PAGE_MARGINS', 'HEADER_FORMAT'].includes(
         r.rule_code,
       ),
-  );
-  const [docSettingsOpen, setDocSettingsOpen] = useState(
-    session.editable && hasGlobalLayoutIssues,
   );
   const [targetFileName, setTargetFileName] = useState(session.target_file_name);
   const [savingDocSettings, setSavingDocSettings] = useState(false);
@@ -111,12 +109,18 @@ export function RevisionWorkspace({
   const [pageMode, setPageMode] = useState<PageMode>('issues_only');
   const [exportingPdf, setExportingPdf] = useState(false);
 
-  // Collapsible changes summary
-  const [changesExpanded, setChangesExpanded] = useState(false);
-
   useEffect(() => {
     setTargetFileName(session.target_file_name);
   }, [session.target_file_name]);
+
+  useEffect(() => {
+    if (!activePopover) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActivePopover(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activePopover]);
 
   const violationsByParagraph = useMemo(
     () => buildViolationMap(session.violations),
@@ -150,6 +154,11 @@ export function RevisionWorkspace({
 
   const handleJumpToParagraph = (paragraphIndex: number, ruleCode: string) => {
     setHighlightedRuleCode(ruleCode);
+    setSelectedParagraphIndex(session.editable ? paragraphIndex : null);
+    scrollToParagraph(paragraphIndex);
+  };
+
+  const handleJumpToChange = (paragraphIndex: number) => {
     setSelectedParagraphIndex(session.editable ? paragraphIndex : null);
     scrollToParagraph(paragraphIndex);
   };
@@ -287,280 +296,303 @@ export function RevisionWorkspace({
     .find((fb) => fb.author === 'agent');
 
   return (
-    <div className="flex h-[calc(100vh-88px)] min-h-[640px] flex-col gap-3">
-      {/* Top Sticky Action Bar */}
-      <div className="rounded-xl border border-[#E5E2DC] bg-white px-4 py-3 shadow-[0_1px_2px_rgba(26,35,50,0.04)]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+    <div className="flex h-screen flex-col overflow-hidden bg-[#F5F5F2] text-[#18181B]">
+      {/* Strict Single-Row 52px Studio Header */}
+      <header className="relative z-30 flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-[#E8E6E1] bg-white px-4">
+        {/* Left: Back + Doc Identity + Score/Error Delta */}
+        <div className="flex min-w-0 items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-[#52525B] transition-colors hover:bg-[#F3F2EE] hover:text-[#18181B]"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>返回</span>
+          </button>
+
+          <div className="h-4 w-px shrink-0 bg-[#ECEAE5]" />
+
+          <h1
+            className="max-w-[180px] truncate text-xs font-semibold text-[#18181B] sm:max-w-[260px]"
+            title={session.target_file_name}
+          >
+            {session.target_file_name}
+          </h1>
+
+          <span className="hidden rounded bg-[#EFF4FA] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#1E3A5F] sm:inline-block">
+            v{session.version}
+          </span>
+
+          <VerdictBadge verdict={session.verdict} compact />
+
+          <div className="hidden items-center gap-1.5 text-[11px] tabular-nums text-[#71717A] md:flex">
+            <span>{formatScore(session.score)} 分</span>
+            <span>·</span>
+            <span className={session.error_count === 0 ? 'text-[#15803D]' : 'text-[#B91C1C]'}>
+              {session.original_error_count}→{session.error_count} 错误
+            </span>
+          </div>
+        </div>
+
+        {/* Center: 2-Way Segmented Mode Toggle */}
+        <div className="hidden rounded-lg border border-[#E8E6E1] bg-[#F7F7F5] p-0.5 text-xs md:inline-flex">
+          <button
+            type="button"
+            onClick={() => setViewMode('single')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              viewMode === 'single'
+                ? 'bg-white text-[#18181B] shadow-2xs'
+                : 'text-[#52525B] hover:text-[#18181B]'
+            }`}
+          >
+            <Square className="h-3 w-3" />
+            <span>编校</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('dual')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              viewMode === 'dual'
+                ? 'bg-white text-[#18181B] shadow-2xs'
+                : 'text-[#52525B] hover:text-[#18181B]'
+            }`}
+          >
+            <Columns2 className="h-3 w-3" />
+            <span>对照</span>
+          </button>
+        </div>
+
+        {/* Right: Max 3 Controls (Page Settings Popover + Single Primary CTA + Export Popover) */}
+        <div className="flex shrink-0 items-center gap-2">
+          {session.editable && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() =>
+                  setActivePopover((prev) => (prev === 'settings' ? null : 'settings'))
+                }
+                className={`relative inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                  activePopover === 'settings'
+                    ? 'border-[#1E3A5F] bg-[#EFF4FA] text-[#1E3A5F]'
+                    : 'border-[#E2E0DA] bg-white text-[#18181B] hover:bg-[#F7F7F5]'
+                }`}
+              >
+                <Settings2 className="h-3.5 w-3.5 text-[#52525B]" />
+                <span className="hidden sm:inline">页面设置</span>
+                {hasGlobalLayoutIssues && (
+                  <span
+                    aria-label="存在全局页面或文件名问题"
+                    className="h-1.5 w-1.5 rounded-full bg-[#DC2626]"
+                  />
+                )}
+              </button>
+
+              {activePopover === 'settings' && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setActivePopover(null)}
+                    aria-hidden="true"
+                  />
+                  <div className="absolute top-10 right-0 z-40 w-80 rounded-xl border border-[#E8E6E1] bg-white p-3.5 shadow-xl">
+                    <div className="text-xs font-semibold text-[#18181B]">文档级页面与文件名规范</div>
+                    <p className="mt-0.5 text-[11px] text-[#71717A]">
+                      修改后立即写回 DOCX 并触发全篇重判
+                    </p>
+
+                    <div className="mt-3 space-y-2.5">
+                      <div>
+                        <label
+                          htmlFor="popover-target-file-name"
+                          className="mb-1 block text-[11px] font-medium text-[#52525B]"
+                        >
+                          导出文件名
+                        </label>
+                        <div className="flex gap-1.5">
+                          <input
+                            id="popover-target-file-name"
+                            type="text"
+                            value={targetFileName}
+                            onChange={(e) => setTargetFileName(e.target.value)}
+                            placeholder="学号_姓名.docx"
+                            className="h-8 min-w-0 flex-1 rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-2.5 text-xs text-[#18181B] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={savingDocSettings}
+                            onClick={() =>
+                              void handleDocumentSettings({ target_file_name: targetFileName })
+                            }
+                            className="h-8 shrink-0 rounded-lg border border-[#E2E0DA] bg-white px-2.5 text-[11px] font-medium text-[#18181B] hover:bg-[#F7F7F5] disabled:opacity-50"
+                          >
+                            应用
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5 border-t border-[#ECEAE5] pt-2.5">
+                        <button
+                          type="button"
+                          disabled={savingDocSettings}
+                          onClick={() => void handleDocumentSettings({ fix_page_size_a4: true })}
+                          className="flex h-8 w-full items-center justify-between rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-3 text-xs font-medium text-[#18181B] hover:border-[#1E3A5F]/40 hover:bg-[#EFF4FA]/60 disabled:opacity-50"
+                        >
+                          <span>设为标准 A4 纸张</span>
+                          <span className="text-[10px] text-[#1E3A5F]">应用</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingDocSettings}
+                          onClick={() => void handleDocumentSettings({ fix_margins: true })}
+                          className="flex h-8 w-full items-center justify-between rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-3 text-xs font-medium text-[#18181B] hover:border-[#1E3A5F]/40 hover:bg-[#EFF4FA]/60 disabled:opacity-50"
+                        >
+                          <span>一键规范页面边距</span>
+                          <span className="text-[10px] text-[#1E3A5F]">应用</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingDocSettings}
+                          onClick={() => void handleDocumentSettings({ fix_headers: true })}
+                          className="flex h-8 w-full items-center justify-between rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-3 text-xs font-medium text-[#18181B] hover:border-[#1E3A5F]/40 hover:bg-[#EFF4FA]/60 disabled:opacity-50"
+                        >
+                          <span>一键修复页眉与双横线</span>
+                          <span className="text-[10px] text-[#1E3A5F]">应用</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Single Primary CTA */}
+          <button
+            type="button"
+            disabled={runningAutoFix}
+            onClick={() => void handleAutoFix()}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1E3A5F] px-3 text-xs font-semibold text-white transition-colors hover:bg-[#162C49] disabled:opacity-55"
+          >
+            {runningAutoFix ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            <span>{runningAutoFix ? '修复中...' : '一键修复'}</span>
+          </button>
+
+          {/* Unified Export Popover */}
+          <div className="relative">
             <button
               type="button"
-              onClick={onBack}
-              className="inline-flex h-8 items-center gap-1 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-2.5 text-xs font-medium text-[#1A2332] hover:bg-[#EFECE6]"
+              onClick={() =>
+                setActivePopover((prev) => (prev === 'export' ? null : 'export'))
+              }
+              className={`inline-flex h-8 items-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition-colors ${
+                activePopover === 'export'
+                  ? 'border-[#1E3A5F] bg-[#EFF4FA] text-[#1E3A5F]'
+                  : 'border-[#E2E0DA] bg-white text-[#18181B] hover:bg-[#F7F7F5]'
+              }`}
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              <span>返回列表</span>
+              <span>导出</span>
+              <ChevronDown className="h-3.5 w-3.5 text-[#71717A]" />
             </button>
 
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="max-w-[280px] truncate text-sm font-semibold text-[#1A2332]" title={session.target_file_name}>
-                  {session.target_file_name}
-                </h2>
-                <span className="rounded border border-[#E5E2DC] bg-[#FAF9F6] px-1.5 py-0.5 text-[10px] font-medium text-[#5A6577]">
-                  {session.editable ? 'DOCX 在线编校' : 'PDF 只读建议'}
-                </span>
-                <span className="rounded bg-[#EEF3F9] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#234B7A]">
-                  v{session.version}
-                </span>
-                <VerdictBadge verdict={session.verdict} compact />
-              </div>
-              <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] tabular-nums text-[#5A6577]">
-                <span>
-                  合规分 <strong className="text-[#1A2332]">{formatScore(session.score)}</strong>
-                </span>
-                <span>·</span>
-                <span>
-                  错误数{' '}
-                  <strong className={session.error_count === 0 ? 'text-[#15803D]' : 'text-[#B91C1C]'}>
-                    {session.original_error_count} → {session.error_count}
-                  </strong>
-                </span>
-                {session.changes.length > 0 && (
-                  <>
-                    <span>·</span>
+            {activePopover === 'export' && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setActivePopover(null)}
+                  aria-hidden="true"
+                />
+                <div className="absolute top-10 right-0 z-40 w-72 rounded-xl border border-[#E8E6E1] bg-white p-3 shadow-xl">
+                  {session.editable && (
+                    <div className="border-b border-[#ECEAE5] pb-2.5">
+                      <div className="mb-1.5 text-[11px] font-medium text-[#71717A]">
+                        修订文档下载
+                      </div>
+                      <a
+                        href={getRevisionDownloadUrl(session.id, 'docx')}
+                        download={session.target_file_name}
+                        onClick={() => setActivePopover(null)}
+                        className="flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[#BBF7D0] bg-[#ECFDF5] px-3 text-xs font-semibold text-[#15803D] hover:bg-[#D1FAE5]"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span>下载修订 DOCX</span>
+                      </a>
+                    </div>
+                  )}
+
+                  <div className={session.editable ? 'pt-2.5' : ''}>
+                    <div className="text-[11px] font-medium text-[#71717A]">
+                      LaTeX 气泡批注 PDF
+                    </div>
+                    <div className="mt-1.5 grid grid-cols-2 rounded-lg border border-[#E8E6E1] bg-[#F7F7F5] p-0.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setPageMode('issues_only')}
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          pageMode === 'issues_only'
+                            ? 'bg-white text-[#18181B] shadow-2xs'
+                            : 'text-[#52525B] hover:text-[#18181B]'
+                        }`}
+                      >
+                        仅问题页
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPageMode('full')}
+                        className={`rounded-md py-1 font-medium transition-colors ${
+                          pageMode === 'full'
+                            ? 'bg-white text-[#18181B] shadow-2xs'
+                            : 'text-[#52525B] hover:text-[#18181B]'
+                        }`}
+                      >
+                        完整论文
+                      </button>
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => setChangesExpanded((prev) => !prev)}
-                      className="font-medium text-[#234B7A] hover:underline"
+                      disabled={exportingPdf}
+                      onClick={() => void handleExportPdf()}
+                      className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[#E2E0DA] bg-white px-3 text-xs font-semibold text-[#18181B] hover:bg-[#F7F7F5] disabled:opacity-55"
                     >
-                      已修改 {session.changes.length} 段（点击{changesExpanded ? '收起' : '查看对照列表'}）
+                      {exportingPdf ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[#1E3A5F]" />
+                      ) : (
+                        <FileDown className="h-3.5 w-3.5 text-[#1E3A5F]" />
+                      )}
+                      <span>{exportingPdf ? 'XeLaTeX 编译中...' : '编译并导出 PDF'}</span>
                     </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* View Mode Toggle */}
-            <div className="inline-flex rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setViewMode('single')}
-                className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
-                  viewMode === 'single'
-                    ? 'bg-white text-[#1A2332] shadow-2xs'
-                    : 'text-[#5A6577] hover:text-[#1A2332]'
-                }`}
-              >
-                <Square className="h-3 w-3" />
-                <span>单栏编校</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('dual')}
-                className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
-                  viewMode === 'dual'
-                    ? 'bg-white text-[#1A2332] shadow-2xs'
-                    : 'text-[#5A6577] hover:text-[#1A2332]'
-                }`}
-              >
-                <Columns2 className="h-3.5 w-3.5" />
-                <span>左右双重对照</span>
-              </button>
-            </div>
-
-            {session.editable && (
-              <button
-                type="button"
-                onClick={() => setDocSettingsOpen((prev) => !prev)}
-                className={`inline-flex h-8 items-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition-colors ${
-                  docSettingsOpen
-                    ? 'border-[#234B7A] bg-[#EEF3F9] text-[#234B7A]'
-                    : 'border-[#E5E2DC] bg-white text-[#5A6577] hover:text-[#1A2332]'
-                }`}
-              >
-                <Settings2 className="h-3.5 w-3.5" />
-                <span>页面/文件名</span>
-              </button>
-            )}
-
-            {/* One-Click Agent Auto-Fix */}
-            <button
-              type="button"
-              disabled={runningAutoFix}
-              onClick={() => void handleAutoFix()}
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#234B7A] px-3 text-xs font-semibold text-white shadow-xs hover:bg-[#1B3B61] disabled:opacity-55"
-            >
-              {runningAutoFix ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="h-3.5 w-3.5" />
-              )}
-              <span>{runningAutoFix ? 'Agent 修复中...' : '一键修改（Agent 修复）'}</span>
-            </button>
-
-            {/* Download Revised DOCX */}
-            {session.editable && (
-              <a
-                href={getRevisionDownloadUrl(session.id, 'docx')}
-                download={session.target_file_name}
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#15803D]/30 bg-[#ECFDF5] px-3 text-xs font-semibold text-[#15803D] hover:bg-[#D1FAE5]"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span>下载修订 DOCX</span>
-              </a>
-            )}
-
-            {/* Export LaTeX Bubble PDF */}
-            <div className="inline-flex items-center rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-0.5">
-              <select
-                aria-label="批注 PDF 页码模式"
-                value={pageMode}
-                onChange={(e) => setPageMode(e.target.value as PageMode)}
-                className="h-7 bg-transparent px-1.5 text-[11px] font-medium text-[#5A6577] focus:outline-none"
-              >
-                <option value="issues_only">仅问题页</option>
-                <option value="full">完整论文</option>
-              </select>
-              <button
-                type="button"
-                disabled={exportingPdf}
-                onClick={() => void handleExportPdf()}
-                className="inline-flex h-7 items-center gap-1 rounded-md bg-white px-2.5 text-[11px] font-semibold text-[#1A2332] shadow-2xs hover:bg-[#EEF3F9] hover:text-[#234B7A] disabled:opacity-55"
-              >
-                {exportingPdf ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-[#234B7A]" />
-                ) : (
-                  <FileDown className="h-3.5 w-3.5 text-[#234B7A]" />
-                )}
-                <span>{exportingPdf ? 'XeLaTeX 编译中...' : '导出气泡批注 PDF'}</span>
-              </button>
-              {session.annotated_pdf_ready && (
-                <a
-                  href={getRevisionDownloadUrl(session.id, 'annotated_pdf')}
-                  download
-                  title="下载已编译的最新气泡批注 PDF"
-                  className="ml-1 inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-[#15803D] hover:bg-[#ECFDF5]"
-                >
-                  <FileCheck className="h-3.5 w-3.5" />
-                  <span>下载 PDF</span>
-                </a>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Collapsible Document-Level Settings Bar */}
-        {session.editable && docSettingsOpen && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <label htmlFor="target-file-name" className="text-[11px] font-medium text-[#5A6577]">
-                导出文件名
-              </label>
-              <input
-                id="target-file-name"
-                type="text"
-                value={targetFileName}
-                onChange={(e) => setTargetFileName(e.target.value)}
-                placeholder="学号_姓名.docx"
-                className="h-7 w-56 rounded-md border border-[#E5E2DC] bg-white px-2 text-xs text-[#1A2332] focus:border-[#234B7A] focus:outline-none"
-              />
-              <button
-                type="button"
-                disabled={savingDocSettings}
-                onClick={() => void handleDocumentSettings({ target_file_name: targetFileName })}
-                className="h-7 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] font-medium text-[#1A2332] hover:border-[#234B7A] disabled:opacity-50"
-              >
-                应用文件名
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                disabled={savingDocSettings}
-                onClick={() => void handleDocumentSettings({ fix_page_size_a4: true })}
-                className="h-7 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] font-medium text-[#234B7A] hover:bg-[#EEF3F9] disabled:opacity-50"
-              >
-                一键设 A4
-              </button>
-              <button
-                type="button"
-                disabled={savingDocSettings}
-                onClick={() => void handleDocumentSettings({ fix_margins: true })}
-                className="h-7 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] font-medium text-[#234B7A] hover:bg-[#EEF3F9] disabled:opacity-50"
-              >
-                一键规范页边距
-              </button>
-              <button
-                type="button"
-                disabled={savingDocSettings}
-                onClick={() => void handleDocumentSettings({ fix_headers: true })}
-                className="h-7 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] font-medium text-[#234B7A] hover:bg-[#EEF3F9] disabled:opacity-50"
-              >
-                一键修页眉与双横线
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Collapsible Paragraph Diff Summary */}
-        {changesExpanded && session.changes.length > 0 && (
-          <div className="mt-3 max-h-40 space-y-1.5 overflow-y-auto rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] p-2.5 text-xs">
-            {session.changes.map((diff) => (
-              <button
-                key={diff.paragraph_index}
-                type="button"
-                onClick={() => {
-                  setSelectedParagraphIndex(session.editable ? diff.paragraph_index : null);
-                  scrollToParagraph(diff.paragraph_index);
-                }}
-                className="flex w-full flex-wrap items-center justify-between gap-2 rounded-md border border-[#EFECE6] bg-white px-2.5 py-1.5 text-left hover:border-[#234B7A]"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-[#EEF3F9] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-[#234B7A]">
-                    第 {diff.paragraph_index + 1} 段
-                  </span>
-                  <span className="font-medium text-[#1A2332]">{diff.summary || '格式/文本已调整'}</span>
-                  {diff.style_changes.length > 0 && (
-                    <span className="text-[11px] text-[#15803D]">
-                      {diff.style_changes.join('；')}
-                    </span>
-                  )}
+                    {session.annotated_pdf_ready && (
+                      <a
+                        href={getRevisionDownloadUrl(session.id, 'annotated_pdf')}
+                        download
+                        onClick={() => setActivePopover(null)}
+                        className="mt-1.5 flex h-7 w-full items-center justify-center gap-1 rounded-md text-[11px] font-medium text-[#15803D] hover:bg-[#ECFDF5]"
+                      >
+                        <FileCheck className="h-3.5 w-3.5" />
+                        <span>下载最新已编译 PDF</span>
+                      </a>
+                    )}
+                  </div>
                 </div>
-                {diff.before_text !== diff.after_text && (
-                  <span className="max-w-md truncate text-[11px] text-[#5A6577]">
-                    “{diff.before_text.slice(0, 28)}” → “{diff.after_text.slice(0, 28)}”
-                  </span>
-                )}
-              </button>
-            ))}
+              </>
+            )}
           </div>
-        )}
-      </div>
-
-      {/* Main Split Area: Left Rulebook + Right Reader/Dual Comparison */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-12">
-        <div className="min-h-0 lg:col-span-4 xl:col-span-3">
-          <RulebookPanel
-            rulebook={session.rulebook}
-            editable={session.editable}
-            activeRuleCode={highlightedRuleCode}
-            fixingRuleCode={fixingRuleCode}
-            onJumpToParagraph={handleJumpToParagraph}
-            onSelectRule={setHighlightedRuleCode}
-            onFixSingleRule={(ruleCode) => handleAutoFix({ ruleCodes: [ruleCode] })}
-          />
         </div>
+      </header>
 
-        <div className="min-h-0 lg:col-span-8 xl:col-span-9">
+      {/* Main Split Area: Paper Canvas (Left) + Unified Review & AI Dock (Right) */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
           {viewMode === 'dual' ? (
-            <div className="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="grid h-full min-h-0 grid-cols-1 divide-y divide-[#E8E6E1] xl:grid-cols-2 xl:divide-x xl:divide-y-0">
               <DocxReaderEditor
                 paneId="left"
-                title="原稿对照（只读）"
-                subtitle="保留原始文本与格式快照，标出已被修订的段落"
+                title="原稿快照"
                 paragraphs={session.original_paragraphs}
                 violationsByParagraph={new Map()}
                 diffMap={diffMap}
@@ -574,12 +606,7 @@ export function RevisionWorkspace({
               />
               <DocxReaderEditor
                 paneId="right"
-                title={session.editable ? '调整后修订稿（可继续微调）' : '建议修订文本对照（只读）'}
-                subtitle={
-                  session.editable
-                    ? 'Agent 修复与手动编辑实时同步 · 点击段落可继续微调并增量重判'
-                    : 'PDF 源文件不可原位改写，可查看改写建议或导出 LaTeX 气泡批注 PDF'
-                }
+                title={session.editable ? '修订稿' : '改写建议对照'}
                 paragraphs={session.current_paragraphs}
                 violationsByParagraph={violationsByParagraph}
                 diffMap={diffMap}
@@ -598,12 +625,7 @@ export function RevisionWorkspace({
           ) : (
             <DocxReaderEditor
               paneId="single"
-              title={session.editable ? '论文结构化阅读与原位编校器' : '论文结构化阅读与批注定位（PDF 只读）'}
-              subtitle={
-                session.editable
-                  ? '点击任意段落可直接修改文字与样式，保存即触发「改哪段判哪段」增量重判'
-                  : '请使用左侧规则书定位问题，或点击「一键修改」/「导出气泡批注 PDF」获取修改方案'
-              }
+              title={session.editable ? '论文编校画布' : '论文结构化阅读'}
               paragraphs={session.current_paragraphs}
               violationsByParagraph={violationsByParagraph}
               diffMap={diffMap}
@@ -620,54 +642,27 @@ export function RevisionWorkspace({
             />
           )}
         </div>
-      </div>
 
-      {/* Bottom User Feedback Bar */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          const trimmed = instruction.trim();
-          if (!trimmed || runningAutoFix) return;
-          void handleAutoFix({ instruction: trimmed });
-        }}
-        className="rounded-xl border border-[#E5E2DC] bg-white px-4 py-2.5 shadow-[0_1px_2px_rgba(26,35,50,0.04)]"
-      >
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex flex-1 items-center gap-2">
-            <MessageSquarePlus className="h-4 w-4 shrink-0 text-[#234B7A]" />
-            <input
-              type="text"
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              disabled={runningAutoFix}
-              placeholder="向 Agent 提出调整建议（例如：保留英文引用段字体、关键词保留“高中生”并控制在 15 字内）..."
-              className="h-8 w-full rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 text-xs text-[#1A2332] placeholder:text-[#8791A1] focus:border-[#234B7A] focus:bg-white focus:outline-none disabled:opacity-55"
-            />
-          </div>
-          <div className="flex items-center justify-between gap-2 sm:justify-end">
-            {latestAgentFeedback?.summary && (
-              <span
-                className="hidden max-w-md truncate text-[11px] text-[#5A6577] xl:inline"
-                title={latestAgentFeedback.summary}
-              >
-                最新反馈：{latestAgentFeedback.summary}
-              </span>
-            )}
-            <button
-              type="submit"
-              disabled={!instruction.trim() || runningAutoFix}
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-[#234B7A] bg-white px-3 text-xs font-semibold text-[#234B7A] hover:bg-[#EEF3F9] disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              {runningAutoFix ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Send className="h-3.5 w-3.5" />
-              )}
-              <span>提交意见并重新生成</span>
-            </button>
-          </div>
+        {/* Unified Right Review & AI Assistant Dock */}
+        <div className="h-[340px] shrink-0 border-t border-[#E8E6E1] lg:h-full lg:w-[360px] lg:border-t-0 lg:border-l xl:w-[390px]">
+          <RulebookPanel
+            rulebook={session.rulebook}
+            changes={session.changes}
+            editable={session.editable}
+            activeRuleCode={highlightedRuleCode}
+            fixingRuleCode={fixingRuleCode}
+            instruction={instruction}
+            runningAutoFix={runningAutoFix}
+            latestAgentFeedback={latestAgentFeedback}
+            onInstructionChange={setInstruction}
+            onSubmitInstruction={(text) => void handleAutoFix({ instruction: text })}
+            onJumpToParagraph={handleJumpToParagraph}
+            onJumpToChange={handleJumpToChange}
+            onSelectRule={setHighlightedRuleCode}
+            onFixSingleRule={(ruleCode) => handleAutoFix({ ruleCodes: [ruleCode] })}
+          />
         </div>
-      </form>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  ArrowLeft,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -55,6 +56,9 @@ export function ViolationDrawer({
   onRecheck,
   onOpenRevision,
 }: ViolationDrawerProps) {
+  const [shouldRender, setShouldRender] = useState(open);
+  const [visible, setVisible] = useState(false);
+
   const [targetRuleSetId, setTargetRuleSetId] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({});
@@ -64,11 +68,34 @@ export function ViolationDrawer({
     Record<string, Record<number, boolean>>
   >({});
 
+  // Smooth right-to-left mount/unmount slide transition
+  useEffect(() => {
+    if (open) {
+      setShouldRender(true);
+      let raf1 = 0;
+      let raf2 = 0;
+      raf1 = window.requestAnimationFrame(() => {
+        raf2 = window.requestAnimationFrame(() => {
+          setVisible(true);
+        });
+      });
+      return () => {
+        window.cancelAnimationFrame(raf1);
+        window.cancelAnimationFrame(raf2);
+      };
+    }
+
+    setVisible(false);
+    const timer = window.setTimeout(() => {
+      setShouldRender(false);
+    }, 260);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
   useEffect(() => {
     if (!detail) return;
     setTargetRuleSetId(detail.rule_set_id);
 
-    // Group order determines which rules auto-expand
     const counts = new Map<string, { severity: Severity; count: number }>();
     for (const v of detail.violations) {
       const existing = counts.get(v.rule_code);
@@ -128,7 +155,7 @@ export function ViolationDrawer({
     });
   }, [detail]);
 
-  if (!open) return null;
+  if (!shouldRender) return null;
 
   const activeRuleSet = detail ? ruleSets.find((r) => r.id === detail.rule_set_id) : undefined;
   const paperChecklistState = detail ? (checkedManualByPaper[detail.paper_id] ?? {}) : {};
@@ -145,34 +172,43 @@ export function ViolationDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div
-        className="fixed inset-0 bg-[#1A2332]/35 backdrop-blur-[1px]"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-      <aside
-        aria-label="论文检测详情抽屉"
-        className="relative z-10 flex h-full w-full max-w-3xl flex-col border-l border-[#E5E2DC] bg-[#FAF9F6] shadow-2xl"
-      >
-        {/* Header */}
-        <div className="border-b border-[#E5E2DC] bg-white px-5 py-4">
+    <section
+      aria-label="论文检测详情子页面"
+      className={`fixed inset-y-0 right-0 left-0 z-30 flex flex-col border-l border-[#E8E6E1] bg-[#FAF9F7] shadow-[-8px_0_28px_rgba(24,24,27,0.08)] transition-transform duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] lg:left-[248px] ${
+        visible ? 'translate-x-0' : 'translate-x-full'
+      }`}
+    >
+      {/* Subpage Header */}
+      <div className="shrink-0 border-b border-[#E8E6E1] bg-white px-4 py-3.5 sm:px-6">
+        <div className="mx-auto w-full max-w-[1120px]">
           <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate text-base font-semibold text-[#1A2332]">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium text-[#52525B] transition-colors hover:bg-[#F3F2EE] hover:text-[#18181B]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span>返回列表</span>
+                </button>
+
+                <span className="h-4 w-px shrink-0 bg-[#ECEAE5]" aria-hidden="true" />
+
+                <h2 className="min-w-0 truncate text-sm font-semibold text-[#18181B] sm:text-base">
                   {detail ? detail.file_name : '正在加载检测详情...'}
                 </h2>
                 {detail && <VerdictBadge verdict={detail.verdict} />}
               </div>
+
               {detail && (
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#5A6577]">
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 pl-1 text-xs text-[#71717A]">
                   <span className="uppercase">{detail.file_ext}</span>
                   <span>·</span>
                   <span className="tabular-nums">{formatFileSize(detail.file_size)}</span>
                   <span>·</span>
                   <span className="tabular-nums">
-                    合规分 <strong className="text-[#1A2332]">{formatScore(detail.score)}</strong>
+                    合规分 <strong className="text-[#18181B]">{formatScore(detail.score)}</strong>
                   </span>
                   <span>·</span>
                   <span className="tabular-nums">
@@ -183,32 +219,33 @@ export function ViolationDrawer({
                 </div>
               )}
             </div>
+
             <button
               type="button"
               onClick={onClose}
-              aria-label="关闭详情抽屉"
-              className="rounded-lg p-1.5 text-[#5A6577] hover:bg-[#FAF9F6] hover:text-[#1A2332]"
+              aria-label="关闭详情子页面"
+              className="shrink-0 rounded-lg p-1.5 text-[#71717A] hover:bg-[#F3F2EE] hover:text-[#18181B]"
             >
-              <X className="h-5 w-5" />
+              <X className="h-4 w-4" />
             </button>
           </div>
 
-          {/* Inline Recheck Bar */}
+          {/* Action Bar: Secondary Recheck + Single Primary CTA */}
           {detail && (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E5E2DC] bg-[#FAF9F6] px-3 py-2">
-              <div className="text-xs text-[#5A6577]">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-3 py-2">
+              <div className="text-xs text-[#71717A]">
                 当前模板：
-                <span className="font-medium text-[#1A2332]">
+                <span className="font-medium text-[#18181B]">
                   {activeRuleSet ? activeRuleSet.name : detail.rule_set_id}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <select
                   aria-label="选择重检模板"
                   value={targetRuleSetId}
                   onChange={(e) => setTargetRuleSetId(e.target.value)}
                   disabled={rechecking || ruleSets.length === 0}
-                  className="h-7 max-w-[220px] rounded-md border border-[#E5E2DC] bg-white px-2 text-xs text-[#1A2332] focus:border-[#234B7A] focus:outline-none"
+                  className="h-8 max-w-[220px] rounded-lg border border-[#E2E0DA] bg-white px-2 text-xs text-[#18181B] focus:border-[#1E3A5F] focus:outline-none"
                 >
                   {ruleSets.map((rs) => (
                     <option key={rs.id} value={rs.id}>
@@ -220,12 +257,12 @@ export function ViolationDrawer({
                   type="button"
                   disabled={rechecking || !targetRuleSetId}
                   onClick={() => onRecheck(detail.paper_id, targetRuleSetId)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md bg-[#234B7A] px-2.5 text-xs font-medium text-white hover:bg-[#1B3B61] disabled:opacity-55"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#E2E0DA] bg-white px-2.5 text-xs font-medium text-[#18181B] hover:bg-[#F7F7F5] disabled:opacity-55"
                 >
                   {rechecking ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#1E3A5F]" />
                   ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
+                    <RefreshCw className="h-3.5 w-3.5 text-[#52525B]" />
                   )}
                   <span>免重解析重检</span>
                 </button>
@@ -234,26 +271,28 @@ export function ViolationDrawer({
                     type="button"
                     disabled={openingRevision}
                     onClick={() => onOpenRevision(detail.id)}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[#234B7A] bg-white px-2.5 text-xs font-semibold text-[#234B7A] hover:bg-[#EEF3F9] disabled:opacity-55"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1E3A5F] px-3 text-xs font-semibold text-white hover:bg-[#162C49] disabled:opacity-55"
                   >
                     {openingRevision ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <Wand2 className="h-3.5 w-3.5" />
                     )}
-                    <span>调整论文</span>
+                    <span>进入修订工作台</span>
                   </button>
                 )}
               </div>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Scrollable Content */}
-        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+      {/* Scrollable Content */}
+      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+        <div className="mx-auto w-full max-w-[1120px] space-y-4">
           {loading && !detail ? (
-            <div className="flex flex-col items-center justify-center py-16 text-xs text-[#5A6577]">
-              <Loader2 className="h-6 w-6 animate-spin text-[#234B7A]" />
+            <div className="flex flex-col items-center justify-center py-20 text-xs text-[#71717A]">
+              <Loader2 className="h-5 w-5 animate-spin text-[#1E3A5F]" />
               <span className="mt-2">正在加载违规明细与格式快照...</span>
             </div>
           ) : detail ? (
@@ -273,9 +312,9 @@ export function ViolationDrawer({
 
               {/* IR Summary Card */}
               {detail.ir_summary && (
-                <div className="rounded-xl border border-[#E5E2DC] bg-white p-4 shadow-2xs">
+                <div className="rounded-xl border border-[#E8E6E1] bg-white p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-xs font-semibold text-[#1A2332]">文档解析摘要（Format IR 快照）</h3>
+                    <h3 className="text-xs font-semibold text-[#18181B]">文档结构与字数快照</h3>
                     <div className="flex items-center gap-2">
                       {detail.file_ext === 'pdf' && (
                         <span
@@ -293,28 +332,34 @@ export function ViolationDrawer({
                       <button
                         type="button"
                         onClick={() => setShowCapabilities((prev) => !prev)}
-                        className="text-[11px] font-medium text-[#234B7A] hover:underline"
+                        className="text-[11px] font-medium text-[#1E3A5F] hover:underline"
                       >
                         {showCapabilities ? '隐藏解析精度' : '查看解析精度'}
                       </button>
                     </div>
                   </div>
 
-                  <div className="mt-3 grid grid-cols-3 gap-2.5 sm:grid-cols-6">
+                  <div className="mt-3 grid grid-cols-3 divide-y divide-[#ECEAE5] overflow-hidden rounded-lg border border-[#ECEAE5] sm:grid-cols-6 sm:divide-x sm:divide-y-0">
                     {[
                       { label: '总页数', val: `${detail.ir_summary.page_count} 页` },
-                      { label: '全文汉字', val: detail.ir_summary.stats.total_chinese_chars.toLocaleString() },
-                      { label: '正文汉字', val: detail.ir_summary.stats.body_chinese_chars.toLocaleString() },
-                      { label: '绪论汉字', val: detail.ir_summary.stats.intro_chinese_chars.toLocaleString() },
+                      {
+                        label: '全文汉字',
+                        val: detail.ir_summary.stats.total_chinese_chars.toLocaleString(),
+                      },
+                      {
+                        label: '正文汉字',
+                        val: detail.ir_summary.stats.body_chinese_chars.toLocaleString(),
+                      },
+                      {
+                        label: '绪论汉字',
+                        val: detail.ir_summary.stats.intro_chinese_chars.toLocaleString(),
+                      },
                       { label: '中文摘要', val: `${detail.ir_summary.stats.abstract_cn_chars} 字` },
                       { label: '英文摘要', val: `${detail.ir_summary.stats.abstract_en_words} 词` },
                     ].map((metric) => (
-                      <div
-                        key={metric.label}
-                        className="rounded-lg border border-[#EFECE6] bg-[#FAF9F6] px-2.5 py-2"
-                      >
-                        <div className="text-[11px] text-[#8791A1]">{metric.label}</div>
-                        <div className="mt-0.5 text-xs font-semibold tabular-nums text-[#1A2332]">
+                      <div key={metric.label} className="bg-[#FAF9F7]/60 px-2.5 py-2">
+                        <div className="text-[11px] text-[#71717A]">{metric.label}</div>
+                        <div className="mt-0.5 text-xs font-semibold tabular-nums text-[#18181B]">
                           {metric.val}
                         </div>
                       </div>
@@ -323,22 +368,22 @@ export function ViolationDrawer({
 
                   {/* Section coverage strip */}
                   <div className="mt-3">
-                    <div className="mb-1.5 text-[11px] font-medium text-[#5A6577]">
+                    <div className="mb-1.5 text-[11px] font-medium text-[#71717A]">
                       识别出的文档区块（{detail.ir_summary.sections.length} 个）
                     </div>
                     {detail.ir_summary.sections.length === 0 ? (
-                      <span className="text-xs text-[#8791A1]">未识别到标准顶层章节</span>
+                      <span className="text-xs text-[#71717A]">未识别到标准顶层章节</span>
                     ) : (
                       <div className="flex flex-wrap gap-1.5">
                         {detail.ir_summary.sections.map((sec, idx) => (
                           <span
                             key={`${sec.key}-${sec.start_paragraph_index}-${idx}`}
                             title={`${sec.title} · ${sec.chinese_char_count} 汉字`}
-                            className="inline-flex items-center gap-1 rounded-md border border-[#E5E2DC] bg-[#FAF9F6] px-2 py-0.5 text-[11px] text-[#1A2332]"
+                            className="inline-flex items-center gap-1 rounded-md border border-[#E8E6E1] bg-[#FAF9F7] px-2 py-0.5 text-[11px] text-[#18181B]"
                           >
                             <span className="font-medium">{getSectionLabel(sec.key)}</span>
                             {sec.page_start != null && (
-                              <span className="tabular-nums text-[#8791A1]">P.{sec.page_start}</span>
+                              <span className="tabular-nums text-[#71717A]">P.{sec.page_start}</span>
                             )}
                           </span>
                         ))}
@@ -347,14 +392,14 @@ export function ViolationDrawer({
                   </div>
 
                   {showCapabilities && (
-                    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[#EFECE6] pt-3">
+                    <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[#ECEAE5] pt-3">
                       {Object.entries(detail.ir_summary.capabilities).map(([capKey, supported]) => (
                         <span
                           key={capKey}
                           className={`rounded px-2 py-0.5 text-[11px] ${
                             supported
                               ? 'bg-[#ECFDF5] text-[#15803D]'
-                              : 'bg-[#F3F4F6] text-[#6B7280]'
+                              : 'bg-[#F3F2EE] text-[#52525B]'
                           }`}
                         >
                           {CAPABILITY_LABELS[capKey] ?? capKey}：{supported ? '精确' : '估算/受限'}
@@ -369,7 +414,7 @@ export function ViolationDrawer({
               {detail.parse_status === 'success' && (
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-semibold text-[#1A2332]">
+                    <h3 className="text-xs font-semibold text-[#18181B]">
                       违规明细（共{' '}
                       <span className="tabular-nums">{detail.violations.length}</span> 处，涉及{' '}
                       <span className="tabular-nums">{groups.length}</span> 条规则）
@@ -385,15 +430,15 @@ export function ViolationDrawer({
                             });
                             setExpandedGroups(next);
                           }}
-                          className="text-[#234B7A] hover:underline"
+                          className="text-[#1E3A5F] hover:underline"
                         >
                           全部展开
                         </button>
-                        <span className="text-[#D5D0C7]">|</span>
+                        <span className="text-[#D8D5CE]">|</span>
                         <button
                           type="button"
                           onClick={() => setExpandedGroups({})}
-                          className="text-[#5A6577] hover:underline"
+                          className="text-[#71717A] hover:underline"
                         >
                           全部收起
                         </button>
@@ -412,184 +457,182 @@ export function ViolationDrawer({
                       </div>
                     </div>
                   ) : (
-                    groups.map((group) => {
-                      const isExpanded = Boolean(expandedGroups[group.ruleCode]);
-                      const showAll = Boolean(showAllItems[group.ruleCode]);
-                      const visibleItems = showAll ? group.items : group.items.slice(0, 5);
-                      const isError = group.severity === 'error';
+                    <div className="divide-y divide-[#ECEAE5] overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
+                      {groups.map((group) => {
+                        const isExpanded = Boolean(expandedGroups[group.ruleCode]);
+                        const showAll = Boolean(showAllItems[group.ruleCode]);
+                        const visibleItems = showAll ? group.items : group.items.slice(0, 5);
+                        const isError = group.severity === 'error';
 
-                      return (
-                        <div
-                          key={group.ruleCode}
-                          className="overflow-hidden rounded-xl border border-[#E5E2DC] bg-white shadow-2xs"
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedGroups((prev) => ({
-                                ...prev,
-                                [group.ruleCode]: !prev[group.ruleCode],
-                              }))
-                            }
-                            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[#FAF9F6]"
-                          >
-                            <div className="flex min-w-0 items-center gap-2.5">
-                              {isExpanded ? (
-                                <ChevronDown className="h-4 w-4 shrink-0 text-[#5A6577]" />
-                              ) : (
-                                <ChevronRight className="h-4 w-4 shrink-0 text-[#5A6577]" />
-                              )}
-                              <span
-                                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                                  isError
-                                    ? 'bg-[#FEF2F2] text-[#B91C1C]'
-                                    : 'bg-[#FFFBEB] text-[#B45309]'
-                                }`}
-                              >
-                                {isError ? 'ERROR' : 'WARN'}
-                              </span>
-                              <span className="truncate text-xs font-semibold text-[#1A2332]">
-                                {group.ruleName}
-                              </span>
-                              <span className="hidden rounded bg-[#FAF9F6] px-1.5 py-0.5 text-[10px] text-[#5A6577] sm:inline-block">
-                                {getCategoryLabel(group.category)}
-                              </span>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-2">
-                              <span className="hidden font-mono text-[10px] text-[#8791A1] md:inline">
-                                {group.ruleCode}
-                              </span>
-                              <span className="rounded-full bg-[#FAF9F6] px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[#1A2332]">
-                                {group.items.length} 处
-                              </span>
-                            </div>
-                          </button>
+                        return (
+                          <div key={group.ruleCode}>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedGroups((prev) => ({
+                                  ...prev,
+                                  [group.ruleCode]: !prev[group.ruleCode],
+                                }))
+                              }
+                              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[#FAF9F7]"
+                            >
+                              <div className="flex min-w-0 items-center gap-2.5">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4 shrink-0 text-[#71717A]" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 shrink-0 text-[#71717A]" />
+                                )}
+                                <span
+                                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                                    isError
+                                      ? 'bg-[#FEF2F2] text-[#B91C1C]'
+                                      : 'bg-[#FFFBEB] text-[#B45309]'
+                                  }`}
+                                >
+                                  {isError ? 'ERROR' : 'WARN'}
+                                </span>
+                                <span className="truncate text-xs font-semibold text-[#18181B]">
+                                  {group.ruleName}
+                                </span>
+                                <span className="hidden rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] text-[#52525B] sm:inline-block">
+                                  {getCategoryLabel(group.category)}
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                <span className="hidden font-mono text-[10px] text-[#71717A] md:inline">
+                                  {group.ruleCode}
+                                </span>
+                                <span className="rounded-full bg-[#F3F2EE] px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[#18181B]">
+                                  {group.items.length} 处
+                                </span>
+                              </div>
+                            </button>
 
-                          {isExpanded && (
-                            <div className="divide-y divide-[#EFECE6] border-t border-[#EFECE6]">
-                              {visibleItems.map((item) => {
-                                const loc = item.location ?? {};
-                                return (
-                                  <div key={item.id} className="space-y-2 px-4 py-3 text-xs">
-                                    {/* Location tags */}
-                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#5A6577]">
-                                      {loc.page != null && (
-                                        <span className="rounded bg-[#EEF3F9] px-1.5 py-0.5 font-medium tabular-nums text-[#234B7A]">
-                                          第 {loc.page} 页
-                                        </span>
-                                      )}
-                                      {loc.section && (
-                                        <span className="rounded bg-[#FAF9F6] px-1.5 py-0.5 text-[#1A2332]">
-                                          区块：{getSectionLabel(String(loc.section))}
-                                        </span>
-                                      )}
-                                      {loc.paragraph_index != null && (
-                                        <span className="rounded bg-[#FAF9F6] px-1.5 py-0.5 tabular-nums text-[#5A6577]">
-                                          第 {Number(loc.paragraph_index) + 1} 段
-                                        </span>
-                                      )}
-                                    </div>
-
-                                    {loc.excerpt && (
-                                      <blockquote className="rounded-md border-l-2 border-[#C8C3B9] bg-[#FAF9F6] px-2.5 py-1.5 text-[11px] text-[#5A6577] break-all">
-                                        “{String(loc.excerpt)}”
-                                      </blockquote>
-                                    )}
-
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                      <div className="rounded-lg border border-[#E5E2DC] bg-[#FAF9F6]/70 px-2.5 py-2">
-                                        <div className="text-[10px] font-semibold tracking-wide text-[#5A6577]">
-                                          规范期望值
-                                        </div>
-                                        <div className="mt-0.5 text-xs text-[#1A2332] break-words">
-                                          {item.expected}
-                                        </div>
+                            {isExpanded && (
+                              <div className="divide-y divide-[#ECEAE5] border-t border-[#ECEAE5] bg-[#FAF9F7]/40">
+                                {visibleItems.map((item) => {
+                                  const loc = item.location ?? {};
+                                  return (
+                                    <div key={item.id} className="space-y-2 px-4 py-3 text-xs">
+                                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#52525B]">
+                                        {loc.page != null && (
+                                          <span className="rounded bg-[#EFF4FA] px-1.5 py-0.5 font-medium tabular-nums text-[#1E3A5F]">
+                                            第 {loc.page} 页
+                                          </span>
+                                        )}
+                                        {loc.section && (
+                                          <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[#18181B]">
+                                            区块：{getSectionLabel(String(loc.section))}
+                                          </span>
+                                        )}
+                                        {loc.paragraph_index != null && (
+                                          <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 tabular-nums text-[#52525B]">
+                                            第 {Number(loc.paragraph_index) + 1} 段
+                                          </span>
+                                        )}
                                       </div>
-                                      <div
-                                        className={`rounded-lg border px-2.5 py-2 ${
-                                          isError
-                                            ? 'border-[#FECACA] bg-[#FEF2F2]/60'
-                                            : 'border-[#FDE68A] bg-[#FFFBEB]/60'
-                                        }`}
-                                      >
+
+                                      {loc.excerpt && (
+                                        <blockquote className="rounded-md border-l-2 border-[#D8D5CE] bg-white px-2.5 py-1.5 text-[11px] text-[#52525B] break-all">
+                                          “{String(loc.excerpt)}”
+                                        </blockquote>
+                                      )}
+
+                                      <div className="grid gap-2 sm:grid-cols-2">
+                                        <div className="rounded-lg border border-[#E8E6E1] bg-white px-2.5 py-2">
+                                          <div className="text-[10px] font-semibold text-[#71717A]">
+                                            规范期望值
+                                          </div>
+                                          <div className="mt-0.5 text-xs text-[#18181B] break-words">
+                                            {item.expected}
+                                          </div>
+                                        </div>
                                         <div
-                                          className={`text-[10px] font-semibold tracking-wide ${
-                                            isError ? 'text-[#B91C1C]' : 'text-[#B45309]'
+                                          className={`rounded-lg border px-2.5 py-2 ${
+                                            isError
+                                              ? 'border-[#FECACA] bg-[#FEF2F2]/60'
+                                              : 'border-[#FDE68A] bg-[#FFFBEB]/60'
                                           }`}
                                         >
-                                          实际检测值
-                                        </div>
-                                        <div className="mt-0.5 text-xs text-[#1A2332] break-words">
-                                          {item.actual}
+                                          <div
+                                            className={`text-[10px] font-semibold ${
+                                              isError ? 'text-[#B91C1C]' : 'text-[#B45309]'
+                                            }`}
+                                          >
+                                            实际检测值
+                                          </div>
+                                          <div className="mt-0.5 text-xs text-[#18181B] break-words">
+                                            {item.actual}
+                                          </div>
                                         </div>
                                       </div>
+
+                                      <p className="text-[11px] text-[#52525B]">
+                                        <strong className="font-medium text-[#18181B]">修改建议：</strong>
+                                        {item.message}
+                                      </p>
                                     </div>
+                                  );
+                                })}
 
-                                    <p className="text-[11px] text-[#5A6577]">
-                                      <strong className="font-medium text-[#1A2332]">修改建议：</strong>
-                                      {item.message}
-                                    </p>
+                                {group.items.length > 5 && (
+                                  <div className="bg-white px-4 py-2 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setShowAllItems((prev) => ({
+                                          ...prev,
+                                          [group.ruleCode]: !prev[group.ruleCode],
+                                        }))
+                                      }
+                                      className="text-xs font-medium text-[#1E3A5F] hover:underline"
+                                    >
+                                      {showAll
+                                        ? '收起多余明细（仅显示前 5 条）'
+                                        : `展开全部 ${group.items.length} 条明细（剩余 ${group.items.length - 5} 条）`}
+                                    </button>
                                   </div>
-                                );
-                              })}
-
-                              {group.items.length > 5 && (
-                                <div className="bg-[#FAF9F6]/70 px-4 py-2 text-center">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setShowAllItems((prev) => ({
-                                        ...prev,
-                                        [group.ruleCode]: !prev[group.ruleCode],
-                                      }))
-                                    }
-                                    className="text-xs font-medium text-[#234B7A] hover:underline"
-                                  >
-                                    {showAll
-                                      ? '收起多余明细（仅显示前 5 条）'
-                                      : `展开全部 ${group.items.length} 条明细（剩余 ${group.items.length - 5} 条）`}
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}
 
               {/* Manual Checklist Accordion */}
               {detail.manual_checklist.length > 0 && (
-                <div className="rounded-xl border border-[#E5E2DC] bg-white shadow-2xs">
+                <div className="overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
                   <button
                     type="button"
                     onClick={() => setChecklistOpen((prev) => !prev)}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold text-[#1A2332] hover:bg-[#FAF9F6]"
+                    className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold text-[#18181B] hover:bg-[#FAF9F7]"
                   >
                     <div className="flex items-center gap-2">
-                      <ClipboardCheck className="h-4 w-4 text-[#234B7A]" />
+                      <ClipboardCheck className="h-4 w-4 text-[#1E3A5F]" />
                       <span>需人工复核项清单（{detail.manual_checklist.length} 项）</span>
-                      <span className="rounded bg-[#FAF9F6] px-1.5 py-0.5 text-[10px] font-normal text-[#8791A1]">
+                      <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] font-normal text-[#71717A]">
                         不触发自动 FAIL
                       </span>
                     </div>
                     {checklistOpen ? (
-                      <ChevronDown className="h-4 w-4 text-[#5A6577]" />
+                      <ChevronDown className="h-4 w-4 text-[#71717A]" />
                     ) : (
-                      <ChevronRight className="h-4 w-4 text-[#5A6577]" />
+                      <ChevronRight className="h-4 w-4 text-[#71717A]" />
                     )}
                   </button>
 
                   {checklistOpen && (
-                    <div className="divide-y divide-[#EFECE6] border-t border-[#EFECE6] px-4 py-2">
+                    <div className="divide-y divide-[#ECEAE5] border-t border-[#ECEAE5] px-4 py-2">
                       {detail.manual_checklist.map((item, idx) => {
                         const checked = Boolean(paperChecklistState[idx]);
                         return (
                           <label
                             key={idx}
-                            className="flex cursor-pointer items-start gap-2.5 py-2 text-xs text-[#1A2332]"
+                            className="flex cursor-pointer items-start gap-2.5 py-2 text-xs text-[#18181B]"
                           >
                             <button
                               type="button"
@@ -598,19 +641,19 @@ export function ViolationDrawer({
                               onClick={() => toggleManualItem(idx)}
                               className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
                                 checked
-                                  ? 'border-[#15803D] bg-[#15803D] text-white'
-                                  : 'border-[#C8C3B9] bg-white'
+                                  ? 'border-[#16A34A] bg-[#16A34A] text-white'
+                                  : 'border-[#D8D5CE] bg-white'
                               }`}
                             >
                               {checked && <Check className="h-3 w-3" />}
                             </button>
-                            <span className={checked ? 'text-[#8791A1] line-through' : ''}>
+                            <span className={checked ? 'text-[#71717A] line-through' : ''}>
                               {item}
                             </span>
                           </label>
                         );
                       })}
-                      <div className="flex items-center gap-1.5 py-2 text-[11px] text-[#8791A1]">
+                      <div className="flex items-center gap-1.5 py-2 text-[11px] text-[#71717A]">
                         <CheckCircle2 className="h-3.5 w-3.5" />
                         <span>勾选状态仅保存在当前浏览器会话中，用于辅助人工核查。</span>
                       </div>
@@ -620,10 +663,10 @@ export function ViolationDrawer({
               )}
             </>
           ) : (
-            <div className="py-16 text-center text-xs text-[#8791A1]">未找到该检测记录</div>
+            <div className="py-20 text-center text-xs text-[#71717A]">未找到该检测记录</div>
           )}
         </div>
-      </aside>
-    </div>
+      </div>
+    </section>
   );
 }

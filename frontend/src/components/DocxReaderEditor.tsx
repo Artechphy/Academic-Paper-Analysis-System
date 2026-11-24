@@ -18,12 +18,11 @@ import type {
   ParagraphEditRequest,
   ParagraphIR,
 } from '../types/revisions';
-import { getAlignmentLabel, getFontLabel, getSectionLabel } from '../utils/format';
+import { getAlignmentLabel, getFontLabel } from '../utils/format';
 
 interface DocxReaderEditorProps {
   paneId: string;
   title: string;
-  subtitle?: string;
   paragraphs: ParagraphIR[];
   violationsByParagraph: Map<number, ViolationResponse[]>;
   diffMap?: Map<number, ParagraphDiff>;
@@ -72,17 +71,17 @@ function visualClassForParagraph(p: ParagraphIR): string {
           ? 'text-justify'
           : 'text-left';
 
-  let roleClass = 'text-[13px] leading-relaxed text-[#1A2332]';
+  let roleClass = 'text-[13.5px] leading-[1.75] text-[#18181B]';
   if (p.role === 'cover_title') {
-    roleClass = 'text-lg font-semibold leading-snug text-[#1A2332]';
+    roleClass = 'text-lg font-semibold leading-snug text-[#18181B]';
   } else if (p.role === 'section_heading' || p.role === 'chapter_heading') {
-    roleClass = 'text-base font-semibold leading-snug text-[#1A2332] pt-2';
+    roleClass = 'text-[16px] font-semibold leading-snug text-[#18181B] pt-2';
   } else if (p.role === 'section_l2_heading') {
-    roleClass = 'text-[15px] font-semibold leading-snug text-[#1A2332] pt-1';
+    roleClass = 'text-[15px] font-semibold leading-snug text-[#18181B] pt-1';
   } else if (p.role === 'section_l3_heading' || p.role === 'section_l4_heading') {
-    roleClass = 'text-[14px] font-semibold leading-snug text-[#1A2332]';
+    roleClass = 'text-[14px] font-semibold leading-snug text-[#18181B]';
   } else if (p.role === 'reference_entry' || p.role === 'toc_entry') {
-    roleClass = 'text-xs leading-relaxed text-[#334155]';
+    roleClass = 'text-xs leading-relaxed text-[#52525B]';
   }
 
   const fontClass =
@@ -98,7 +97,6 @@ function visualClassForParagraph(p: ParagraphIR): string {
 export function DocxReaderEditor({
   paneId,
   title,
-  subtitle,
   paragraphs,
   violationsByParagraph,
   diffMap,
@@ -117,7 +115,6 @@ export function DocxReaderEditor({
   const [currentChunk, setCurrentChunk] = useState(0);
   const scrolledSeqRef = useRef<number | null>(null);
 
-  // Local editing draft for the currently selected paragraph
   const [draftText, setDraftText] = useState('');
   const [draftFont, setDraftFont] = useState('');
   const [draftSize, setDraftSize] = useState('');
@@ -239,72 +236,72 @@ export function DocxReaderEditor({
   };
 
   return (
-    <section className="flex h-full flex-col overflow-hidden rounded-xl border border-[#E5E2DC] bg-white shadow-[0_1px_2px_rgba(26,35,50,0.04)]">
-      {/* Reader Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#EFECE6] bg-[#FAF9F6] px-4 py-2.5">
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className="text-xs font-semibold text-[#1A2332]">{title}</h3>
-            {editable ? (
-              <span className="rounded bg-[#ECFDF5] px-1.5 py-0.5 text-[10px] font-medium text-[#15803D]">
-                点击段落可编辑 · 改哪段判哪段
-              </span>
-            ) : (
-              <span className="rounded bg-[#F3F4F6] px-1.5 py-0.5 text-[10px] font-medium text-[#5A6577]">
-                只读对照
-              </span>
-            )}
-          </div>
-          {subtitle && <p className="mt-0.5 text-[11px] text-[#5A6577]">{subtitle}</p>}
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-[#F5F5F2]">
+      {/* Slim 40px Canvas Header */}
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-[#ECEAE5] bg-white px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <h3 className="truncate text-xs font-semibold text-[#18181B]">{title}</h3>
+          <span
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+              editable
+                ? 'bg-[#ECFDF5] text-[#15803D]'
+                : 'bg-[#F3F2EE] text-[#71717A]'
+            }`}
+          >
+            {editable ? '可编辑' : '只读'}
+          </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {totalChunks > 1 && (
-            <div className="flex items-center gap-1 rounded-md border border-[#E5E2DC] bg-white px-1.5 py-0.5 text-[11px] tabular-nums text-[#5A6577]">
+            <div className="flex items-center gap-1 rounded-md border border-[#E8E6E1] bg-[#FAF9F7] px-1.5 py-0.5 text-[11px] tabular-nums text-[#52525B]">
               <button
                 type="button"
                 disabled={safeChunk === 0}
                 onClick={() => setCurrentChunk((c) => Math.max(0, c - 1))}
                 aria-label="上一屏"
-                className="rounded p-0.5 hover:bg-[#FAF9F6] disabled:opacity-35"
+                className="rounded p-0.5 hover:bg-white disabled:opacity-35"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </button>
               <span>
-                第 {safeChunk * CHUNK_SIZE + 1}–
+                {safeChunk * CHUNK_SIZE + 1}–
                 {Math.min((safeChunk + 1) * CHUNK_SIZE, visibleParagraphs.length)} /{' '}
-                {visibleParagraphs.length} 段（{safeChunk + 1}/{totalChunks}）
+                {visibleParagraphs.length}
               </span>
               <button
                 type="button"
                 disabled={safeChunk >= totalChunks - 1}
                 onClick={() => setCurrentChunk((c) => Math.min(totalChunks - 1, c + 1))}
                 aria-label="下一屏"
-                className="rounded p-0.5 hover:bg-[#FAF9F6] disabled:opacity-35"
+                className="rounded p-0.5 hover:bg-white disabled:opacity-35"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
+
           <button
             type="button"
             onClick={() => setOnlyRelevant((prev) => !prev)}
-            className={`rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+            className={`h-6.5 rounded-md border px-2 text-[11px] font-medium transition-colors ${
               onlyRelevant
-                ? 'border-[#234B7A] bg-[#EEF3F9] text-[#234B7A]'
-                : 'border-[#E5E2DC] bg-white text-[#5A6577] hover:text-[#1A2332]'
+                ? 'border-[#1E3A5F] bg-[#EFF4FA] text-[#1E3A5F]'
+                : 'border-[#E8E6E1] bg-white text-[#52525B] hover:text-[#18181B]'
             }`}
           >
-            {onlyRelevant ? `仅看问题/变更段 (${visibleParagraphs.length})` : `全文 (${paragraphs.length} 段)`}
+            {onlyRelevant
+              ? `问题/变更 (${visibleParagraphs.length})`
+              : `全文 (${paragraphs.length})`}
           </button>
         </div>
       </div>
 
-      {/* Paper Canvas */}
-      <div className="flex-1 overflow-y-auto bg-[#F4F2EC]/70 p-4 sm:p-5">
-        <div className="mx-auto max-w-[780px] space-y-2 rounded-xl border border-[#E5E2DC] bg-white p-5 shadow-xs sm:p-7">
+      {/* Distraction-Free Paper Canvas */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="mx-auto max-w-[760px] space-y-1.5 rounded-xl border border-[#E8E6E1] bg-white px-6 py-7 shadow-[0_1px_4px_rgba(24,24,27,0.04)] sm:px-9">
           {pagedParagraphs.length === 0 ? (
-            <div className="py-12 text-center text-xs text-[#8791A1]">
+            <div className="py-12 text-center text-xs text-[#71717A]">
               当前筛选视图下没有需要关注的段落
             </div>
           ) : (
@@ -329,10 +326,10 @@ export function DocxReaderEditor({
                     key={p.index}
                     data-pane={paneId}
                     data-para-index={p.index}
-                    className="my-2 flex items-center gap-2 rounded-lg border border-dashed border-[#D5D0C7] bg-[#FAF9F6] px-3 py-1.5 text-[11px] text-[#5A6577]"
+                    className="my-2 flex items-center gap-2 rounded-lg border border-dashed border-[#D8D5CE] bg-[#FAF9F7] px-3 py-1.5 text-[11px] text-[#71717A]"
                   >
-                    <Table2 className="h-3.5 w-3.5 text-[#234B7A]" />
-                    <span>表格区域（下方缩进段落为表格单元格内容，可点击编辑）</span>
+                    <Table2 className="h-3.5 w-3.5 text-[#1E3A5F]" />
+                    <span>表格区域（下方缩进段落为表格单元格内容）</span>
                   </div>
                 );
               }
@@ -340,14 +337,28 @@ export function DocxReaderEditor({
               const hasErrors = pViolations.some((v) => v.severity === 'error');
               const hasWarnings = pViolations.length > 0 && !hasErrors;
               const canEditThis = editable && !isSaving;
+              const showExpandedViolations =
+                pViolations.length > 0 && (isSelected || matchesRule);
+
+              const borderClass = isSelected
+                ? 'border border-[#1E3A5F] bg-[#EFF4FA]/30 ring-2 ring-[#1E3A5F]/10'
+                : matchesRule
+                  ? 'border border-[#FECACA] border-l-[3px] border-l-[#DC2626] bg-[#FEF2F2]/40'
+                  : hasErrors
+                    ? 'border border-transparent border-l-[3px] border-l-[#DC2626] hover:bg-[#FAF9F7]'
+                    : hasWarnings
+                      ? 'border border-transparent border-l-[3px] border-l-[#D97706] hover:bg-[#FAF9F7]'
+                      : diff
+                        ? 'border border-transparent border-l-[3px] border-l-[#16A34A] bg-[#ECFDF5]/25 hover:bg-[#ECFDF5]/40'
+                        : 'border border-transparent hover:bg-[#FAF9F7]';
 
               return (
                 <div key={p.index}>
                   {showPageBreak && (
-                    <div className="my-3 flex items-center gap-2 text-[10px] font-medium text-[#8791A1]">
-                      <div className="h-px flex-1 bg-[#EFECE6]" />
+                    <div className="my-4 flex items-center gap-3 text-[10px] font-medium text-[#71717A]">
+                      <div className="h-px flex-1 bg-[#ECEAE5]" />
                       <span className="tabular-nums">第 {p.page_no} 页</span>
-                      <div className="h-px flex-1 bg-[#EFECE6]" />
+                      <div className="h-px flex-1 bg-[#ECEAE5]" />
                     </div>
                   )}
 
@@ -357,34 +368,25 @@ export function DocxReaderEditor({
                     onClick={() => {
                       if (canEditThis && !isSelected) onSelectParagraph(p.index);
                     }}
-                    className={`group relative rounded-lg border px-3 py-2 transition-all ${
-                      p.in_table ? 'ml-4 border-l-2 border-l-[#CBD5E1]' : ''
-                    } ${
-                      isSelected
-                        ? 'border-[#234B7A] bg-[#EEF3F9]/40 ring-2 ring-[#234B7A]/15'
-                        : matchesRule
-                          ? 'border-[#B91C1C] bg-[#FEF2F2]/60 ring-2 ring-[#B91C1C]/15'
-                          : hasErrors
-                            ? 'border-[#FECACA] bg-[#FEF2F2]/35 hover:border-[#FCA5A5]'
-                            : hasWarnings
-                              ? 'border-[#FDE68A] bg-[#FFFBEB]/40 hover:border-[#FCD34D]'
-                              : diff
-                                ? 'border-[#BBF7D0] bg-[#ECFDF5]/40'
-                                : 'border-transparent hover:border-[#E5E2DC] hover:bg-[#FAF9F6]/60'
-                    } ${canEditThis && !isSelected ? 'cursor-pointer' : ''}`}
+                    className={`group relative rounded-r-lg px-3.5 py-2 transition-colors ${
+                      p.in_table ? 'ml-4' : ''
+                    } ${borderClass} ${canEditThis && !isSelected ? 'cursor-pointer' : ''}`}
                   >
-                    {/* Metadata bar */}
-                    <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-[#8791A1]">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                    {/* Hover-only or Selected Floating Micro-Badge */}
+                    <div
+                      className={`mb-1 flex flex-wrap items-center justify-between gap-2 text-[10px] transition-opacity ${
+                        isSelected || pViolations.length > 0 || diff || isModified
+                          ? 'opacity-100'
+                          : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5 text-[#71717A] opacity-0 transition-opacity group-hover:opacity-100">
                         <span className="tabular-nums font-medium">#{p.index + 1}</span>
-                        {p.section_key && (
-                          <span className="rounded bg-[#FAF9F6] px-1.5 py-0.5 text-[#5A6577]">
-                            {getSectionLabel(p.section_key)}
-                          </span>
-                        )}
+                        <span>·</span>
                         <span className="tabular-nums">
-                          {getFontLabel(p.font_name)} ·{' '}
-                          {p.font_size_pt != null ? `${p.font_size_pt}pt` : '字号未知'} ·{' '}
+                          {getFontLabel(p.font_name)}
+                          {p.font_size_pt != null ? ` ${p.font_size_pt}pt` : ''}
+                          {' · '}
                           {getAlignmentLabel(p.alignment)}
                           {p.line_spacing_pt != null
                             ? ` · 行距 ${Number(p.line_spacing_pt.toFixed(1))}pt`
@@ -392,23 +394,34 @@ export function DocxReaderEditor({
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-1.5">
+                      <div className="ml-auto flex items-center gap-1.5">
                         {diff && (
                           <span className="rounded bg-[#ECFDF5] px-1.5 py-0.5 font-medium text-[#15803D]">
                             {diff.source === 'llm'
                               ? 'LLM 改写'
                               : diff.source === 'rule'
                                 ? '规则修复'
-                                : '手动已改'}
+                                : '已修改'}
                           </span>
                         )}
                         {!diff && isModified && (
-                          <span className="rounded bg-[#EEF3F9] px-1.5 py-0.5 font-medium text-[#234B7A]">
+                          <span className="rounded bg-[#EFF4FA] px-1.5 py-0.5 font-medium text-[#1E3A5F]">
                             已改动
                           </span>
                         )}
+                        {pViolations.length > 0 && !showExpandedViolations && (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 font-medium tabular-nums ${
+                              hasErrors
+                                ? 'bg-[#FEF2F2] text-[#B91C1C]'
+                                : 'bg-[#FFFBEB] text-[#B45309]'
+                            }`}
+                          >
+                            {pViolations.length} 处问题
+                          </span>
+                        )}
                         {canEditThis && !isSelected && (
-                          <span className="hidden items-center gap-0.5 text-[#234B7A] group-hover:inline-flex">
+                          <span className="hidden items-center gap-0.5 font-medium text-[#1E3A5F] group-hover:inline-flex">
                             <Edit3 className="h-3 w-3" />
                             <span>编辑</span>
                           </span>
@@ -416,20 +429,20 @@ export function DocxReaderEditor({
                       </div>
                     </div>
 
-                    {/* Paragraph content or inline editor */}
+                    {/* Paragraph Content or Notion-style Inline Editor */}
                     {isSelected && editable ? (
                       <div
-                        className="mt-1.5 space-y-2.5 rounded-lg border border-[#234B7A]/30 bg-white p-3 shadow-xs"
+                        className="mt-1 space-y-2.5 rounded-lg border border-[#E8E6E1] bg-white p-3 shadow-sm"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {p.has_image && !p.text.trim() ? (
-                          <div className="flex items-center gap-2 rounded bg-[#FAF9F6] px-2.5 py-2 text-xs text-[#5A6577]">
-                            <FileImage className="h-4 w-4 text-[#234B7A]" />
+                          <div className="flex items-center gap-2 rounded bg-[#FAF9F7] px-2.5 py-2 text-xs text-[#52525B]">
+                            <FileImage className="h-4 w-4 text-[#1E3A5F]" />
                             <span>该段包含嵌入式图片，仅可调整段落排版样式（对齐/行距）</span>
                           </div>
                         ) : (
                           <textarea
-                            rows={Math.min(8, Math.max(2, Math.ceil(draftText.length / 42)))}
+                            rows={Math.min(8, Math.max(2, Math.ceil(draftText.length / 44)))}
                             value={draftText}
                             onChange={(e) => setDraftText(e.target.value)}
                             onKeyDown={(e) => {
@@ -440,18 +453,18 @@ export function DocxReaderEditor({
                                 onSelectParagraph(null);
                               }
                             }}
-                            className="w-full rounded-md border border-[#D5D0C7] bg-[#FAF9F6] p-2 text-xs leading-relaxed text-[#1A2332] focus:border-[#234B7A] focus:bg-white focus:outline-none"
+                            className="w-full rounded-md border border-[#E8E6E1] bg-[#FAF9F7] p-2.5 text-xs leading-relaxed text-[#18181B] focus:border-[#1E3A5F] focus:bg-white focus:outline-none"
                           />
                         )}
 
-                        {/* Style controls */}
-                        <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-5">
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-[#5A6577]">字体</label>
+                        {/* Compact Style Toolbar (wraps cleanly in both single & dual panes) */}
+                        <div className="flex flex-wrap items-end gap-2 text-[11px]">
+                          <div className="min-w-[116px] flex-1">
+                            <label className="mb-0.5 block text-[10px] text-[#71717A]">字体</label>
                             <select
                               value={draftFont}
                               onChange={(e) => setDraftFont(e.target.value)}
-                              className="h-7 w-full rounded border border-[#E5E2DC] bg-white px-1.5 text-[11px] focus:border-[#234B7A] focus:outline-none"
+                              className="h-7 w-full rounded border border-[#E8E6E1] bg-white px-1.5 text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                             >
                               {FONT_OPTIONS.map((opt) => (
                                 <option key={opt.value} value={opt.value}>
@@ -461,8 +474,8 @@ export function DocxReaderEditor({
                             </select>
                           </div>
 
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-[#5A6577]">字号 (pt)</label>
+                          <div className="min-w-[140px] flex-1">
+                            <label className="mb-0.5 block text-[10px] text-[#71717A]">字号 (pt)</label>
                             <div className="flex gap-1">
                               <select
                                 value={
@@ -473,7 +486,7 @@ export function DocxReaderEditor({
                                 onChange={(e) => {
                                   if (e.target.value) setDraftSize(e.target.value);
                                 }}
-                                className="h-7 w-full rounded border border-[#E5E2DC] bg-white px-1 text-[11px] focus:border-[#234B7A] focus:outline-none"
+                                className="h-7 min-w-0 flex-1 rounded border border-[#E8E6E1] bg-white px-1 text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                               >
                                 <option value="">自定义</option>
                                 {SIZE_PRESETS.map((s) => (
@@ -489,36 +502,36 @@ export function DocxReaderEditor({
                                 max="72"
                                 value={draftSize}
                                 onChange={(e) => setDraftSize(e.target.value)}
-                                className="h-7 w-14 rounded border border-[#E5E2DC] bg-white px-1.5 tabular-nums text-[11px] focus:border-[#234B7A] focus:outline-none"
+                                className="h-7 w-13 shrink-0 rounded border border-[#E8E6E1] bg-white px-1.5 tabular-nums text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                               />
                             </div>
                           </div>
 
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-[#5A6577]">粗细</label>
+                          <div className="w-[82px] shrink-0">
+                            <label className="mb-0.5 block text-[10px] text-[#71717A]">粗细</label>
                             <select
                               value={draftBold}
                               onChange={(e) =>
                                 setDraftBold(e.target.value as '' | 'true' | 'false')
                               }
-                              className="h-7 w-full rounded border border-[#E5E2DC] bg-white px-1.5 text-[11px] focus:border-[#234B7A] focus:outline-none"
+                              className="h-7 w-full rounded border border-[#E8E6E1] bg-white px-1.5 text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                             >
-                              <option value="">保持原状</option>
+                              <option value="">原状</option>
                               <option value="true">加粗</option>
-                              <option value="false">常规（不加粗）</option>
+                              <option value="false">常规</option>
                             </select>
                           </div>
 
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-[#5A6577]">对齐</label>
+                          <div className="w-[92px] shrink-0">
+                            <label className="mb-0.5 block text-[10px] text-[#71717A]">对齐</label>
                             <select
                               value={draftAlignment}
                               onChange={(e) =>
                                 setDraftAlignment(e.target.value as '' | Alignment)
                               }
-                              className="h-7 w-full rounded border border-[#E5E2DC] bg-white px-1.5 text-[11px] focus:border-[#234B7A] focus:outline-none"
+                              className="h-7 w-full rounded border border-[#E8E6E1] bg-white px-1.5 text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                             >
-                              <option value="">保持原对齐</option>
+                              <option value="">原对齐</option>
                               <option value="left">左对齐</option>
                               <option value="center">居中</option>
                               <option value="right">右对齐</option>
@@ -526,8 +539,8 @@ export function DocxReaderEditor({
                             </select>
                           </div>
 
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-[#5A6577]">行距 (pt)</label>
+                          <div className="w-[74px] shrink-0">
+                            <label className="mb-0.5 block text-[10px] text-[#71717A]">行距 (pt)</label>
                             <input
                               type="number"
                               step="0.5"
@@ -536,7 +549,7 @@ export function DocxReaderEditor({
                               value={draftSpacing}
                               onChange={(e) => setDraftSpacing(e.target.value)}
                               placeholder="如 22"
-                              className="h-7 w-full rounded border border-[#E5E2DC] bg-white px-2 tabular-nums text-[11px] focus:border-[#234B7A] focus:outline-none"
+                              className="h-7 w-full rounded border border-[#E8E6E1] bg-white px-2 tabular-nums text-[11px] focus:border-[#1E3A5F] focus:outline-none"
                             />
                           </div>
                         </div>
@@ -548,10 +561,10 @@ export function DocxReaderEditor({
                                 type="button"
                                 disabled={isSaving}
                                 onClick={() => void onRevertParagraph(p.index)}
-                                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] font-medium text-[#5A6577] hover:text-[#B91C1C] disabled:opacity-50"
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E2E0DA] bg-white px-2.5 text-[11px] font-medium text-[#52525B] hover:text-[#B91C1C] disabled:opacity-50"
                               >
                                 <RotateCcw className="h-3 w-3" />
-                                <span>撤销还原原稿</span>
+                                <span>还原原稿</span>
                               </button>
                             )}
                           </div>
@@ -560,7 +573,7 @@ export function DocxReaderEditor({
                               type="button"
                               disabled={isSaving}
                               onClick={() => onSelectParagraph(null)}
-                              className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E5E2DC] bg-white px-2.5 text-[11px] text-[#5A6577] hover:text-[#1A2332]"
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E2E0DA] bg-white px-2.5 text-[11px] text-[#52525B] hover:text-[#18181B]"
                             >
                               <X className="h-3 w-3" />
                               <span>取消</span>
@@ -569,7 +582,7 @@ export function DocxReaderEditor({
                               type="button"
                               disabled={isSaving}
                               onClick={() => void handleSave(p)}
-                              className="inline-flex h-7 items-center gap-1 rounded-md bg-[#234B7A] px-3 text-[11px] font-semibold text-white hover:bg-[#1B3B61] disabled:opacity-55"
+                              className="inline-flex h-7 items-center gap-1 rounded-md bg-[#1E3A5F] px-3 text-[11px] font-semibold text-white hover:bg-[#162C49] disabled:opacity-55"
                             >
                               {isSaving ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -584,13 +597,13 @@ export function DocxReaderEditor({
                     ) : (
                       <div className={visualClassForParagraph(p)}>
                         {p.has_image && (
-                          <span className="mr-1.5 inline-flex items-center gap-1 rounded bg-[#EEF3F9] px-1.5 py-0.5 text-[10px] font-medium text-[#234B7A]">
+                          <span className="mr-1.5 inline-flex items-center gap-1 rounded bg-[#EFF4FA] px-1.5 py-0.5 text-[10px] font-medium text-[#1E3A5F]">
                             <FileImage className="h-3 w-3" />
                             插图
                           </span>
                         )}
                         {p.object_kind === 'formula' && (
-                          <span className="mr-1.5 inline-flex items-center rounded bg-[#F3F4F6] px-1.5 py-0.5 text-[10px] font-medium text-[#4B5563]">
+                          <span className="mr-1.5 inline-flex items-center rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] font-medium text-[#52525B]">
                             公式
                           </span>
                         )}
@@ -627,10 +640,10 @@ export function DocxReaderEditor({
                       </div>
                     )}
 
-                    {/* Inline error bubbles */}
-                    {pViolations.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {pViolations.slice(0, 3).map((v) => (
+                    {/* Expanded violation details only when selected or highlighted */}
+                    {showExpandedViolations && (
+                      <div className="mt-2 space-y-1.5">
+                        {pViolations.map((v) => (
                           <div
                             key={v.id}
                             className={`rounded-md border px-2.5 py-1.5 text-[11px] ${
@@ -648,11 +661,6 @@ export function DocxReaderEditor({
                             </div>
                           </div>
                         ))}
-                        {pViolations.length > 3 && (
-                          <div className="text-[10px] text-[#B91C1C]">
-                            本段另有 {pViolations.length - 3} 条提示，请查看左侧规则书
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -660,27 +668,27 @@ export function DocxReaderEditor({
               );
             })
           )}
+
           {totalChunks > 1 && (
-            <div className="mt-4 flex items-center justify-between border-t border-[#EFECE6] pt-3 text-xs text-[#5A6577]">
+            <div className="mt-6 flex items-center justify-between border-t border-[#ECEAE5] pt-4 text-xs text-[#52525B]">
               <button
                 type="button"
                 disabled={safeChunk === 0}
                 onClick={() => setCurrentChunk((c) => Math.max(0, c - 1))}
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E5E2DC] bg-[#FAF9F6] px-2.5 text-[11px] font-medium hover:bg-[#EFECE6] disabled:opacity-40"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E2E0DA] bg-white px-2.5 text-[11px] font-medium hover:bg-[#F7F7F5] disabled:opacity-40"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
                 <span>上一屏</span>
               </button>
               <span className="tabular-nums text-[11px]">
                 第 {safeChunk + 1} / {totalChunks} 屏（第 {safeChunk * CHUNK_SIZE + 1}–
-                {Math.min((safeChunk + 1) * CHUNK_SIZE, visibleParagraphs.length)} 段，共{' '}
-                {visibleParagraphs.length} 段）
+                {Math.min((safeChunk + 1) * CHUNK_SIZE, visibleParagraphs.length)} 段）
               </span>
               <button
                 type="button"
                 disabled={safeChunk >= totalChunks - 1}
                 onClick={() => setCurrentChunk((c) => Math.min(totalChunks - 1, c + 1))}
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E5E2DC] bg-[#FAF9F6] px-2.5 text-[11px] font-medium hover:bg-[#EFECE6] disabled:opacity-40"
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-[#E2E0DA] bg-white px-2.5 text-[11px] font-medium hover:bg-[#F7F7F5] disabled:opacity-40"
               >
                 <span>下一屏</span>
                 <ChevronRight className="h-3.5 w-3.5" />
