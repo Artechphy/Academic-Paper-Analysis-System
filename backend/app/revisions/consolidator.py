@@ -31,9 +31,10 @@ def _group(violations):
         point = ()
         if code in POINT_RULES:
             index = location.get("paragraph_index")
-            point = (index, location.get("page"), location.get("section"),
-                     _value(finding, "expected") if index is None else None)
-        result[(code, *point)].append(finding)
+            point = (index,) if index is not None else (
+                None, location.get("page"), location.get("section"), _value(finding, "expected"),
+            )
+        result[(code, _value(finding, "severity"), *point)].append(finding)
     return result
 
 
@@ -59,8 +60,8 @@ def consolidate(violations, original_violations, rule_items, *, notes=None, edit
     rank = {_value(item, "rule_code") or _value(item, "code"): i for i, item in enumerate(rule_items)}
     entries = []
     keys = dict.fromkeys([*current, *original])
-    for key in sorted(keys, key=lambda key: (rank.get(key[0], len(rank)), key[0])):
-        code = key[0]
+    for key in sorted(keys, key=lambda key: (rank.get(key[0], len(rank)), key[0], key[1] != "error")):
+        code, severity = key[:2]
         now, before = current.get(key, []), original.get(key, [])
         findings = now or before
         counts = Counter(_value(f, "actual") for f in findings)
@@ -74,7 +75,7 @@ def consolidate(violations, original_violations, rule_items, *, notes=None, edit
             scope = "global"
         entries.append(RulebookEntry(
             rule_code=code, rule_name=_value(findings[0], "rule_name"), category=_value(findings[0], "category"),
-            severity="error" if any(_value(f, "severity") == "error" for f in findings) else "warning",
+            severity=severity,
             scope=scope, status=("fixed" if not now else "ignored" if note and note.ignore else "open"),
             total_count=len(now), original_count=len(before),
             expected="；".join(dict.fromkeys(_value(f, "expected") for f in findings))[:1200],
@@ -102,8 +103,9 @@ def select_pdf_annotations(rulebook: list[RulebookEntry]) -> list[PdfAnnotation]
     grouped = defaultdict(list)
     for entry in rulebook:
         if entry.status != "ignored":
-            grouped[entry.rule_code].extend(PdfAnnotation(entry, anchor)
-                                           for anchor in entry.representative_anchors if anchor.page is not None)
+            grouped[entry.rule_code, entry.severity].extend(
+                PdfAnnotation(entry, anchor) for anchor in entry.representative_anchors if anchor.page is not None
+            )
     def priority(item):
         return item.entry.status == "fixed", item.entry.severity != "error", item.anchor.bbox is None
 

@@ -7,8 +7,9 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import re
 import unicodedata
+from typing import Literal
 
-from app.engine.utils import HAN, SECTION_NAMES, chapter_number, count_chinese_chars, normalize_font_name, pdf_page_parities
+from app.engine.utils import FONT_SUFFIX, HAN, SECTION_NAMES, chapter_number, count_chinese_chars, normalize_font_name, pdf_page_parities
 from app.parsers.base import CN_KEYWORDS, cover_elements
 
 SECTION = SECTION_NAMES.get
@@ -22,6 +23,13 @@ COVER_ELEMENTS = {
     "title_en": "英文题目", "author_name": "作者姓名", "major": "专业",
     "supervisor": "导师", "student_id": "学号", "title": "论文题目", "keywords": "关键词",
 }
+_NON_PROSE_UNITS = {"footnote", "formula", "scanned_page"}
+CHINESE_BODY_MIN_CHARS = 200
+_CODE_FONT_FAMILIES = (
+    "couriernew", "courier", "consolas", "menlo", "monaco", "lucidaconsole", "liberationmono",
+    "dejavusansmono", "cascadiamono", "cascadiacode", "sourcecodepro", "jetbrainsmono", "firacode",
+    "nimbusmonops", "sfmono", "ibmplexmono", "robotomono", "monospace",
+)
 SIDES = {"top": "上", "bottom": "下", "left": "左", "right": "右"}
 
 
@@ -31,6 +39,7 @@ class Finding:
     actual: str
     message: str
     location: dict = field(default_factory=dict)
+    severity: Literal["error", "warning"] | None = None
 
 
 def _location(paragraph=None, *, page=None, section=None, section_index=None, excerpt=None):
@@ -44,6 +53,7 @@ def _location(paragraph=None, *, page=None, section=None, section_index=None, ex
         "page": page, "paragraph_index": getattr(paragraph, "index", None),
         "section": section, "section_index": section_index, "excerpt": excerpt[:100] if excerpt else None,
         "bbox": list(bbox) if bbox is not None else None,
+        "page_end": getattr(paragraph, "page_end", None) if getattr(paragraph, "page_end", None) != page else None,
     }
     return {key: value for key, value in values.items() if value is not None}
 
@@ -100,7 +110,7 @@ def _style(allowed, actual, tolerance):
 
 
 def _typography(paragraph, allowed, tolerance, label, *, runs=None, sample=None, chinese_context=None,
-                ignore_scripts=False):
+                ignore_scripts=False, locate_runs=False, alternative_font=None):
     sample = sample if sample is not None else paragraph
     runs = paragraph.runs if runs is None else runs
     run_rules = {key: value for key, value in allowed.items() if key in {"font_name", "font_size_pt", "bold"}}
@@ -119,15 +129,35 @@ def _typography(paragraph, allowed, tolerance, label, *, runs=None, sample=None,
     if not entries and not (ignore_scripts and runs and all(run.is_script for run in runs)):
         entries = [(run_rules, sample)]
     entries.append(({key: value for key, value in allowed.items() if key not in run_rules}, paragraph))
-    failures = list(dict.fromkeys(_style(wanted, actual, tolerance) for wanted, actual in entries))
-    failures = [(wanted, actual) for wanted, actual in failures if wanted]
-    if not failures:
-        return []
-    return [Finding(
-        "；".join(dict.fromkeys(wanted for wanted, _ in failures)),
-        "；".join(dict.fromkeys(actual for _, actual in failures)),
-        f"请调整{label}的排版。", _location(paragraph),
-    )]
+    failures_by_page = defaultdict(list)
+    for targets, actual in entries:
+        if alternative_font and "font_name" in targets and alternative_font(normalize_font_name(actual.font_name)):
+            targets = {key: value for key, value in targets.items() if key != "font_name"}
+        wanted, observed = _style(targets, actual, tolerance)
+        if wanted:
+            page = getattr(actual, "page_no", None) if locate_runs else None
+            failures_by_page[page or paragraph.page_no].append((wanted, observed, actual))
+    findings = []
+    for page, failures in failures_by_page.items():
+        location = _location(paragraph)
+        if locate_runs:
+            fragments = [item for _, _, item in failures if item is not paragraph]
+            if fragments:
+                location["highlight_excerpt"] = " ".join(item.text.strip() for item in fragments)[:100]
+            if page is not None and page != paragraph.page_no:
+                location["page"] = page
+                location.pop("bbox", None)
+            boxes = list(zip(*(item.bbox for item in fragments if getattr(item, "bbox", None))))
+            if boxes:
+                location["bbox"] = [min(boxes[0]), min(boxes[1]), max(boxes[2]), max(boxes[3])]
+            if fragments or page != paragraph.page_no:
+                location.pop("page_end", None)
+        findings.append(Finding(
+            "；".join(dict.fromkeys(wanted for wanted, _, _ in failures)),
+            "；".join(dict.fromkeys(actual for _, actual, _ in failures)),
+            f"请调整{label}的排版。", location,
+        ))
+    return findings
 
 
 def file_name(doc, params):
@@ -189,22 +219,55 @@ def line_spacing(doc, params):
         tolerance = params.get("pdf_tolerance_pt", tolerance)
     minimum = params["min_pt"]
     paragraphs = [
-        p for p in doc.paragraphs if p.text and not p.in_table and p.role != "other"
+        p for p in doc.paragraphs if p.text and not (p.in_table or p.in_figure)
+        and p.unit_kind not in _NON_PROSE_UNITS | {"underline_row"}
+        and p.role not in {"other", "footnote", "scanned_page", "underline_row"} and p.object_kind != "formula"
         and p.line_spacing_pt is not None and (doc.file_ext == "docx" or p.line_spacing_rule == "estimated")
     ]
     if not paragraphs:
         return None
-    return [Finding(
-        f"行距至少 {minimum:g} pt（容差 {tolerance:g} pt）",
-        f"{'基线间距约' if doc.file_ext == 'pdf' else '段落行距'} {p.line_spacing_pt:.2f} pt",
-        "请增大段落行距。", _location(p),
-    ) for p in paragraphs if p.line_spacing_pt + tolerance < minimum]
+    findings = []
+    for paragraph in paragraphs:
+        spacing = paragraph.line_spacing_pt
+        label = "段落行距"
+        anchor = None
+        if doc.file_ext == "pdf":
+            label = "段内最小基线间距约"
+            credible_gap = max(5, (paragraph.font_size_pt or 0) * .72)
+            if paragraph.line_spacing_samples:
+                anchor = min((sample for sample in paragraph.line_spacing_samples if sample.spacing_pt >= credible_gap),
+                             key=lambda sample: sample.spacing_pt, default=None)
+                if anchor is None:
+                    continue
+                spacing = anchor.spacing_pt
+            elif paragraph.line_spacings_pt:
+                spacing = min((gap for gap in paragraph.line_spacings_pt if gap >= credible_gap), default=None)
+                if spacing is None:
+                    continue
+        if spacing + tolerance < minimum:
+            location = _location(paragraph)
+            if anchor is not None:
+                location.update(page=anchor.page_no, bbox=list(anchor.bbox))
+                location.pop("page_end", None)
+                if anchor.page_no != paragraph.page_no:
+                    location.pop("excerpt", None)
+            findings.append(Finding(
+                f"行距至少 {minimum:g} pt（容差 {tolerance:g} pt）", f"{label} {spacing:.2f} pt",
+                "请增大段落行距。", location,
+            ))
+    return findings
 
 
 def _header_style(item, params, keys, location):
     expected, actual = _style({key: params[key] for key in keys if key in params}, item,
                               params["font_size_tolerance_pt"])
     return [Finding(expected, actual, "请调整页眉排版。", location)] if expected else []
+
+
+def _physical_pages(paragraph):
+    if paragraph.page_no is None:
+        return ()
+    return range(paragraph.page_no, (paragraph.page_end or paragraph.page_no) + 1)
 
 
 def header_format(doc, params):
@@ -217,8 +280,8 @@ def header_format(doc, params):
     if pdf:
         chapters = [p for p in doc.paragraphs if p.role in {"chapter_heading", "section_heading"}
                     and chapter_number(p.text) is not None]
-        body_pages = sorted({p.page_no for p in doc.paragraphs
-                             if p.section_key == "body" and p.page_no is not None and (p.text or p.object_kind)})
+        body_pages = sorted({page for p in doc.paragraphs if p.section_key == "body" and (p.text or p.object_kind)
+                             for page in _physical_pages(p)})
         if not body_pages:
             return None
         candidates_by_page = defaultdict(list)
@@ -251,7 +314,7 @@ def header_format(doc, params):
         if not _near(setup.header_distance_mm, params["header_distance_mm"], .02):
             findings.append(Finding(
                 f"页眉距边界 {params['header_distance_mm']:g} mm",
-                f"实际距离 {_value(setup.header_distance_mm, ' mm')}", "请调整页眉距边界的距离。", location,
+                f"实际距离 {_value(setup.header_distance_mm, ' mm')}", "请调整页眉距边界的距离。", location, severity="warning",
             ))
         local_chapters = [p for p in chapters if p.section_index == index]
         if not local_chapters:
@@ -305,14 +368,17 @@ def page_numbers(doc, params):
         key: "decimal" for key in params["decimal_sections"]
     }
     pdf = doc.file_ext == "pdf"
+    blank_pages = {page.page_no for page in doc.page_setups if page.is_blank} if pdf else set()
     indexed = defaultdict(list)
     for item in doc.headers_footers.page_numbers:
         indexed[item.page_no if pdf else item.section_index].append(item)
     required = defaultdict(dict)
     for paragraph in doc.paragraphs:
-        index = paragraph.page_no if pdf else paragraph.section_index
-        if index is not None and paragraph.text and paragraph.section_key in formats:
-            required[index].setdefault(formats[paragraph.section_key], paragraph)
+        if not paragraph.text or paragraph.section_key not in formats:
+            continue
+        for index in _physical_pages(paragraph) if pdf else (paragraph.section_index,):
+            if index is not None and index not in blank_pages:
+                required[index].setdefault(formats[paragraph.section_key], paragraph)
     if not required:
         return None
     if pdf:
@@ -321,7 +387,8 @@ def page_numbers(doc, params):
         for previous, current in zip(sorted_pages, sorted_pages[1:]):
             if required[previous].keys() == required[current].keys():
                 for page in range(previous + 1, current):
-                    required[page] = required[previous]
+                    if page not in blank_pages:
+                        required[page] = required[previous]
     result = []
     for index, format_paragraphs in sorted(required.items()):
         layouts = defaultdict(list)
@@ -335,15 +402,17 @@ def page_numbers(doc, params):
                 if candidates and not wrong:
                     continue
                 item = wrong[0] if wrong else None
-                actual = NUMBERS[item.num_format] if item else "未识别到页码"
-                if item and item.num_format != "none":
-                    actual += f"，位于{POSITIONS[item.position]}，{ALIGNMENTS.get(item.alignment, '对齐未知')}"
+                recognized = item and item.num_format != "none" and (not pdf or item.raw_text.strip())
+                actual = "未识别到页码"
                 variant_text = {"first": "首页", "even": "偶数页", "default": ""}[variant]
-                location = _location(paragraph)
-                if pdf:
-                    location.pop("bbox", None)
-                    location.update(_location(item) if item else {})
-                    location["page"] = index
+                location = _location(page=index if pdf else None, section=paragraph.section_key,
+                                     section_index=None if pdf else index)
+                if recognized:
+                    actual = (f"{NUMBERS[item.num_format]}，位于{POSITIONS[item.position]}，"
+                              f"{ALIGNMENTS.get(item.alignment, '对齐未知')}")
+                    location.update(_location(item))
+                    if not item.raw_text.strip():
+                        location.pop("excerpt", None)
                 result.append(Finding(
                     f"{variant_text}{POSITIONS.get(params['position'], params['position'])}页码为"
                     f"{NUMBERS[fmt]}且{ALIGNMENTS.get(params['alignment'], params['alignment'])}",
@@ -354,14 +423,32 @@ def page_numbers(doc, params):
 
 def required_sections(doc, params):
     keys = {section.key for section in doc.sections}
-    findings = [
-        Finding(f"包含{SECTION(key, key)}", f"未识别到{SECTION(key, key)}", f"请补充{SECTION(key, key)}。",
-                _location(section=key))
-        for key in params["required_sections"] if key not in keys
-    ]
+    cover_end = max((p.page_no for p in doc.paragraphs
+                     if p.page_no and p.section_key == "cover" and p.text), default=1)
+    module_start = min((s.page_start for s in doc.sections if s.page_start
+                        and s.key in {"abstract_cn", "abstract_en", "toc", "introduction", "body"}), default=0)
+    scans = [p for p in doc.paragraphs if p.unit_kind == "scanned_page" and p.page_no]
+    front_scans = [p for p in scans if cover_end < p.page_no < module_start]
+    findings = []
+    for key in params["required_sections"]:
+        if key in keys:
+            continue
+        label = SECTION(key, key)
+        if front_scans and key in {"declaration", "defense_signature"}:
+            pages = "、".join(str(p.page_no) for p in front_scans)
+            findings.append(Finding(f"包含{label}", f"检测到第 {pages} 页为扫描图像页，疑似含{label}。",
+                                    "请人工核验扫描页内容。", _location(front_scans[0]) | {"section": key},
+                                    severity="warning"))
+        else:
+            findings.append(Finding(f"包含{label}", f"未识别到{label}", f"请补充{label}。", _location(section=key)))
+    if module_start and not doc.is_image_only_pdf:
+        for scan in scans:
+            if scan.page_no >= module_start and scan.page_no > cover_end:
+                findings.append(Finding("图文版式可核验", f"第 {scan.page_no} 页为扫描图像页",
+                                        "建议人工核验该页图文排版。", _location(scan), severity="warning"))
     elements = cover_elements(doc.paragraphs)
     found = {
-        "title": "title_cn" in elements or "title_en" in elements,
+        "title": any(elements[key][0] for key in ("title_cn", "title_en") if key in elements),
         "keywords": any(p.role in {"keywords_cn", "keywords_en"} and
                         (CN_KEYWORDS.sub("", p.text).strip() if p.role == "keywords_cn"
                          else re.sub(r"^key\s*words?\s*[:：]?\s*", "", p.text, flags=re.I).strip())
@@ -404,12 +491,17 @@ def cover(doc, params):
         if key not in elements:
             label = COVER_ELEMENTS.get(key, key)
             findings.append(Finding(f"封面含{label}", f"未识别到{label}", f"请在封面补充{label}。", _location(section="cover")))
-    if "school_code" in elements:
+        elif not elements[key][0]:
+            paragraph = elements[key][1]
+            actual = "下划线槽位未填" if paragraph.has_underline else "已识别标签，字段为空"
+            label = COVER_ELEMENTS.get(key, key)
+            findings.append(Finding(f"封面含{label}", actual, f"请填写封面的{label}。", _location(paragraph)))
+    if "school_code" in elements and elements["school_code"][0]:
         code, p = elements["school_code"]
         if _compact(code) != str(params["school_code"]):
             findings.append(Finding(f"学校编号为 {params['school_code']}", f"学校编号为 {code}",
                                     "请更正封面的学校编号。", _location(p)))
-    if "title_cn" in elements:
+    if "title_cn" in elements and elements["title_cn"][0]:
         title, p = elements["title_cn"]
         maximum = params["title_cn_max_chinese_chars"]
         count = count_chinese_chars(title)
@@ -417,6 +509,12 @@ def cover(doc, params):
             findings.append(Finding(f"中文题目至多 {maximum} 个汉字", f"中文题目有 {count} 个汉字",
                                     "请精简封面中文题目。", _location(p)))
         findings.extend(_typography(p, params["title_cn_style"], params["font_size_tolerance_pt"], "封面中文题目"))
+    for paragraph in doc.paragraphs:
+        if (paragraph.section_key in {"declaration", "defense_signature"} and paragraph.unit_kind == "underline_row"
+                and paragraph.field_label == "signature" and paragraph.has_underline
+                and not (paragraph.field_value or paragraph.has_signature_image)):
+            findings.append(Finding("签名栏已签署", "签名下划线为空", "请人工核验签名栏。",
+                                    _location(paragraph), severity="warning"))
     return findings
 
 
@@ -424,25 +522,26 @@ def section_typography(doc, params):
     key = params["section_key"]
     label = SECTION(key, key)
     tolerance = params["font_size_tolerance_pt"]
-    paragraphs = [p for p in doc.paragraphs if p.section_key == key and p.text]
+    paragraphs = [p for p in doc.paragraphs if p.section_key == key and p.text and not (p.in_figure or p.in_table)
+                  and p.unit_kind not in _NON_PROSE_UNITS]
     if not paragraphs:
         return None
     findings = []
     for p in paragraphs:
         if p.role == "section_heading":
-            findings.extend(_typography(p, params["heading"], tolerance, f"{label}标题"))
+            findings.extend(_typography(p, params["heading"], tolerance, f"{label}标题", ignore_scripts=True))
         elif p.role == "body_text" and "body" in params:
-            findings.extend(_typography(p, params["body"], tolerance, f"{label}正文"))
+            findings.extend(_typography(p, params["body"], tolerance, f"{label}正文", ignore_scripts=True))
         elif p.role in {"keywords_cn", "keywords_en"} and "keywords" in params:
-            findings.extend(_typography(p, params["keywords"], tolerance, f"{label}关键词"))
+            findings.extend(_typography(p, params["keywords"], tolerance, f"{label}关键词", ignore_scripts=True))
         elif p.role == "toc_entry" and "entry" in params:
             findings.extend(_typography(p, params["entry"], tolerance, "目录条目",
-                                        runs=p.toc_entry_runs or p.runs))
+                                        runs=p.toc_entry_runs or p.runs, ignore_scripts=True))
             if p.toc_page_number is None:
                 findings.append(Finding("目录条目显示页码", "未识别到目录页码", "请更新目录页码。", _location(p)))
             else:
                 findings.extend(_typography(p, params["page_number"], tolerance, "目录页码",
-                                            runs=p.toc_page_runs, sample=p.toc_page_style))
+                                            runs=p.toc_page_runs, sample=p.toc_page_style, ignore_scripts=True))
     return findings
 
 
@@ -456,11 +555,37 @@ def heading_typography(doc, params):
     return findings
 
 
+def _western_body_font(name):
+    if name == "times_new_roman":
+        return True
+    compact = (name or "").replace("_", "")
+    return any((compact == family or compact.startswith(family) and FONT_SUFFIX.fullmatch(compact[len(family):]))
+               for family in _CODE_FONT_FAMILIES)
+
+
 def body_typography(doc, params):
     allowed = {key: params[key] for key in ("font_name", "font_size_pt", "bold", "alignment") if key in params}
     paragraphs = [p for p in doc.paragraphs if p.section_key in params["section_keys"]
-                  and p.role in {"body_text", "reference_entry"} and p.text]
+                  and p.role in {"body_text", "reference_entry"} and p.text and not (p.in_table or p.in_figure)
+                  and p.unit_kind not in _NON_PROSE_UNITS and p.role != "footnote" and p.object_kind != "formula"]
     tolerance = params["font_size_tolerance_pt"]
+    chinese_body = doc.stats.body_chinese_chars >= CHINESE_BODY_MIN_CHARS
+    chinese_reference_context = chinese_body or any(
+        p.role == "body_text" and p.section_key in {"introduction", "body", "conclusion"} and HAN.search(p.text)
+        for p in doc.paragraphs
+    )
+    wants_simsun = normalize_font_name(allowed.get("font_name")) == "simsun"
+
+    def alternative_font(paragraph):
+        if not wants_simsun or HAN.search(paragraph.text):
+            return None
+        if chinese_body:
+            return _western_body_font
+        # Preserve the narrower reference exception for short Chinese documents.
+        if (chinese_reference_context and paragraph.role == "reference_entry"
+                and re.search(r"[A-Za-z]", paragraph.text)):
+            return lambda name: name == "times_new_roman"
+        return None
     if params.get("require_consistent_size"):
         sizes = [p.font_size_pt for p in paragraphs if p.font_size_pt is not None]
         if not sizes:
@@ -468,7 +593,9 @@ def body_typography(doc, params):
         # Use the most frequent paragraph size as the reference for each run.
         allowed = allowed | {"font_size_pt": Counter(sizes).most_common(1)[0][0]}
     if doc.file_ext != "pdf":
-        return [finding for p in paragraphs for finding in _typography(p, allowed, tolerance, "正文")]
+        return [finding for p in paragraphs for finding in _typography(
+            p, allowed, tolerance, "正文", ignore_scripts=True, alternative_font=alternative_font(p),
+        )]
 
     groups = defaultdict(list)
     for paragraph in paragraphs:
@@ -480,11 +607,15 @@ def body_typography(doc, params):
         group_findings = {}
         for line in lines:
             for finding in _typography(line, allowed, tolerance, "正文", chinese_context=chinese,
-                                       ignore_scripts=True):
-                key = (finding.expected, finding.actual)
+                                       ignore_scripts=True, locate_runs=True, alternative_font=alternative_font(line)):
+                key = (finding.expected, finding.actual, finding.location.get("page"))
                 if key in group_findings:
                     locations = group_findings[key].location
                     locations.setdefault("paragraph_indices", [locations["paragraph_index"]]).append(line.index)
+                    highlights = dict.fromkeys(filter(None, (locations.get("highlight_excerpt"),
+                                                             finding.location.get("highlight_excerpt"))))
+                    if highlights:
+                        locations["highlight_excerpt"] = "；".join(highlights)[:100]
                 else:
                     group_findings[key] = finding
         findings.extend(group_findings.values())
@@ -496,11 +627,12 @@ def abstract_content(doc, params):
     if not paragraphs:
         return None
     findings = []
+    section_location = _location(page=paragraphs[0].page_no, section="abstract_cn")
     minimum = params["min_chinese_chars"]
     count = doc.stats.abstract_cn_chars
     if count < minimum:
         findings.append(Finding(f"中文摘要至少 {minimum} 个汉字", f"摘要有 {count} 个汉字",
-                                "请补充中文摘要正文。", _location(paragraphs[0])))
+                                "请补充中文摘要正文。", section_location))
     for p in paragraphs:
         if p.role == "body_text" and re.search(params["forbidden_citation_pattern"], p.text):
             findings.append(Finding("摘要中不含参考文献序号", "摘要中出现参考文献序号",
@@ -518,7 +650,7 @@ def abstract_content(doc, params):
         findings.append(Finding(
             f"{low}–{high} 个关键词，用「{separator}」分隔，合计至多 {max_chars} 个汉字",
             f"按指定分隔符得到 {len(parts)} 项、共 {size} 个汉字，原文为「{text or '未识别'}」",
-            "请核对中文关键词的数量、长度及分隔符。", _location(keywords or paragraphs[0]),
+            "请核对中文关键词的数量、长度及分隔符。", _location(keywords) if keywords is not None else section_location,
         ))
     return findings
 
@@ -526,8 +658,8 @@ def abstract_content(doc, params):
 def word_count(doc, params):
     findings = []
     for prefix, key, label, count in (
-        ("body", "body", "正文", doc.stats.body_chinese_chars),
         ("intro", "introduction", "绪论", doc.stats.intro_chinese_chars),
+        ("body", "body", "正文", doc.stats.body_chinese_chars),
     ):
         low = params.get(f"{prefix}_min_chinese_chars")
         high = params.get(f"{prefix}_max_chinese_chars")
@@ -536,8 +668,20 @@ def word_count(doc, params):
                                                   f"至多 {high}" if high is not None else "") if item)
             p = next((p for p in doc.paragraphs if p.section_key == key and p.text), None)
             findings.append(Finding(f"{label}{limits} 个汉字", f"{label}有 {count} 个汉字",
-                                    f"请调整{label}篇幅。", _location(p, section=key)))
+                                    f"请调整{label}篇幅。", _location(page=p.page_no if p else None, section=key)))
     return findings
+
+
+def _object_excerpt(item):
+    name = "插图区域" if item.kind == "figure" else "表格区域"
+    if item.inner_texts:
+        sample = "、".join(text.strip() for text in item.inner_texts if text.strip())
+        if sample:
+            hint = "含文字" if item.kind == "figure" else "含"
+            return f"{name}（{hint}：{sample[:85]}{('…' if len(sample) > 85 else '')}）"
+    if box := item.object_bbox or item.bbox:
+        return f"{name}（约 {box[2] - box[0]:g}×{box[3] - box[1]:g} pt）"
+    return name
 
 
 def figure_table(doc, params):
@@ -546,15 +690,27 @@ def figure_table(doc, params):
     findings = []
     formats = {"decimal": r"[0-9]+", "roman": r"[IVXLCDMivxlcdm]+"}
     token = formats[params["number_format"]]
-    for item in doc.figures_tables:
+    def order(index):
+        paragraph = paragraphs.get(index)
+        return ((paragraph.page_no or 0) if paragraph else 0, index)
+
+    for item in sorted(doc.figures_tables, key=lambda item: order(item.paragraph_index)):
         if item.kind not in {"figure", "table"}:
             continue
         if not item.caption_text:
+            if item.is_continuation:
+                continue
             label = "图题" if item.kind == "figure" else "表题"
+            location = _location(paragraphs.get(item.paragraph_index), excerpt=_object_excerpt(item))
             findings.append(Finding(f"对象附有{label}", f"未识别到{label}", f"请补充{label}。",
-                                    _location(paragraphs.get(item.paragraph_index))))
+                                    location))
             continue
         grouped[item.kind].append(item)
+        if item.caption_style_issue:
+            findings.append(Finding(
+                "题注格式规范", f"题注格式不规范：{item.caption_style_issue}", "请调整题注标识与编号格式。",
+                _location(paragraphs.get(item.paragraph_index)),
+            ))
         expected = params[item.kind]
         if item.relative_position != expected["position"] or item.alignment != expected["alignment"]:
             label = "图题" if item.kind == "figure" else "表题"
@@ -580,8 +736,13 @@ def figure_table(doc, params):
         previous_number = None
         for item in items:
             number = unicodedata.normalize("NFKC", item.number_raw)
-            if (doc.file_ext == "pdf" and kind == "table" and number and number == previous_number
-                    and re.search(r"\(\s*continued\s*\)", item.caption_text, re.I)):
+            if kind == "table" and (item.is_continuation or (
+                doc.file_ext == "pdf" and number and number == previous_number
+                and re.search(r"\(\s*continued\s*\)", item.caption_text, re.I)
+            )):
+                if number and previous_number and number != previous_number:
+                    findings.append(Finding(f"续表沿用表号 {previous_number}", f"续表编号为 {number}",
+                                            "请更正续表编号。", _location(paragraphs.get(item.paragraph_index))))
                 continue
             previous_number = number
             single = re.fullmatch(f"({token})", number)
@@ -605,7 +766,8 @@ def figure_table(doc, params):
                 f"{label}采用{NUMBERS[params['number_format']]}{expected}", f"实际题注编号为「{item.number_raw or '缺失'}」",
                 f"请更正{label}题注编号并核对编号顺序。", _location(paragraphs.get(item.paragraph_index)),
             ))
-    return findings
+    return sorted(findings, key=lambda item: (item.location.get("page") or 0,
+                                              item.location.get("paragraph_index") or 0))
 
 
 def references(doc, params):

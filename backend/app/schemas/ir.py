@@ -22,6 +22,8 @@ class TextRunIR(TextStyleIR):
     text: str
     font_name_latin: str | None = None
     is_script: bool = False
+    page_no: int | None = None
+    bbox: tuple[float, float, float, float] | None = None
 
 
 class PageSetupIR(IRModel):
@@ -35,6 +37,7 @@ class PageSetupIR(IRModel):
     odd_even_headers: bool | None = None
     section_index: int | None = None
     page_no: int | None = None
+    is_blank: bool = False
 
 
 class HeaderItemIR(TextStyleIR):
@@ -67,11 +70,31 @@ class HeaderFooterIR(IRModel):
     page_numbers: list[PageNumberIR] = Field(default_factory=list)
 
 
+UnitKind = Literal["paragraph", "heading", "caption", "figure", "table", "formula", "underline_row",
+                   "footnote", "reference", "toc_entry", "scanned_page", "other"]
+
+
+class LineSpacingSampleIR(IRModel):
+    spacing_pt: float
+    page_no: int
+    bbox: tuple[float, float, float, float]
+
+
 class ParagraphIR(TextStyleIR):
     index: int
     bbox: tuple[float, float, float, float] | None = None
     page_no: int | None = None
     paragraph_start_index: int | None = None
+    unit_kind: UnitKind = "paragraph"
+    page_end: int | None = None
+    line_count: int = 1
+    line_spacings_pt: list[float] = Field(default_factory=list)
+    line_spacing_samples: list[LineSpacingSampleIR] = Field(default_factory=list)
+    field_label: str | None = None
+    field_value: str | None = None
+    has_underline: bool = False
+    has_signature_image: bool = False
+    in_figure: bool = False
     section_key: str | None = None
     role: str = "other"
     text: str
@@ -109,6 +132,12 @@ class FigureTableIR(IRModel):
     alignment: Alignment | None = None
     relative_position: Literal["below", "above", "unknown"] = "unknown"
     chapter_index: int | None = None
+    caption_style_issue: str | None = None
+    is_continuation: bool = False
+    subfigure_count: int = 1
+    inner_texts: list[str] = Field(default_factory=list)
+    object_bbox: tuple[float, float, float, float] | None = None
+    object_page_no: int | None = None
 
 
 class ReferenceIR(IRModel):

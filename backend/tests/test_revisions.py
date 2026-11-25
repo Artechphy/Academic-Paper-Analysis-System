@@ -25,7 +25,7 @@ from app.parsers.pdf_parser import parse_pdf
 from app.revisions import docx_fixer, latex_annotator, llm_advisor
 from app.revisions.consolidator import consolidate, select_pdf_annotations
 from app.revisions.incremental import (
-    edit_paragraph, evaluate_incremental, find_paragraph_element, update_paragraph_ir,
+    edit_paragraph, evaluate_incremental, find_paragraph_element, resolved_findings, update_paragraph_ir,
 )
 from app.schemas.revisions import ParagraphEditRequest
 from tests.fixtures_generator import CHAPTER, EXAMPLE, _PdfSample, _png, make_damaged, make_fjnu_docx
@@ -79,6 +79,37 @@ def test_rulebook_scopes_fixed_points_and_caps():
     assert all(a.entry.status != "ignored" for a in annotations)
 
 
+def test_rulebook_keeps_rule_errors_and_warnings_on_separate_cards():
+    wrong_header = _violation("HEADER_FORMAT", 5, expected="章名", actual="错误页眉")
+    wrong_distance = _violation("HEADER_FORMAT", severity="warning", expected="页眉距", actual="当前距离")
+    entries = consolidate([wrong_distance], [wrong_distance, wrong_header], FJNU_MASTER_RULES)
+    assert [(e.severity, e.status, e.total_count, e.original_count) for e in entries] == [
+        ("error", "fixed", 0, 1), ("warning", "open", 1, 1),
+    ]
+    assert entries[0].affected_pages == [5] and entries[1].affected_pages == []
+
+
+def test_partially_corrected_compound_finding_keeps_its_open_rulebook_entry():
+    code = "FIGURE_TABLE_CAPTION"
+    original = _violation(code, 1, 0, expected="位置正确；编号正确")
+    remaining = _violation(code, 2, 0, expected="编号正确")
+    entry, = consolidate([remaining], [original], FJNU_MASTER_RULES)
+    assert (entry.status, entry.total_count, entry.original_count, entry.affected_pages) == ("open", 1, 1, [2])
+    assert resolved_findings([original], [remaining]) == 0
+    assert resolved_findings([original], []) == 1
+
+
+def test_docx_bilingual_captions_can_match_an_object_two_paragraphs_away():
+    doc = Document()
+    doc.add_heading(CHAPTER, level=1)
+    doc.add_paragraph("表1 汇总结果")
+    doc.add_paragraph("Table 1 Summary")
+    doc.add_table(rows=2, cols=2)
+    ir = parse_docx(_word_bytes(doc))
+    table, = ir.figures_tables
+    assert table.caption_text == "表1 汇总结果" and table.relative_position == "above"
+
+
 def test_pdf_bboxes_for_wrapped_text_objects_headers_and_findings():
     sample = _PdfSample(None)
     with closing(sample.pdf):
@@ -96,8 +127,8 @@ def test_pdf_bboxes_for_wrapped_text_objects_headers_and_findings():
         document = parse_pdf(sample.pdf.tobytes(), "20260001_测试.pdf")
 
     first_body = next(p for p in document.paragraphs if "English" in p.text)
-    continuation = next(p for p in document.paragraphs if p.paragraph_start_index == first_body.index)
-    assert first_body.bbox[3] >= continuation.bbox[3]
+    assert first_body.line_count == 2 and first_body.bbox[3] > 158
+    assert first_body.line_spacings_pt == pytest.approx([21])
     assert document.headers_footers.odd_headers[0].bbox[3] < first_body.bbox[1]
     assert document.headers_footers.page_numbers[0].bbox[1] > first_body.bbox[3]
     reference, = document.references
@@ -230,6 +261,31 @@ def test_header_repair_for_plain_chapters_keeps_even_footer():
     assert not evaluate(after, rules).violations
 
 
+def test_unstyled_long_docx_heading_survives_fixer_and_incremental_judgment():
+    document = Document()
+    document.add_paragraph(CHAPTER, style="Heading 1")
+    title = "1.1 研究材料：纸质档案数字化的文本校对方法及其在教学资源中的应用"
+    assert document.add_paragraph(title).style.name == "Normal" and len(title) > 24
+    document.add_paragraph("这里是独立的正文。")
+    original = parse_docx(_word_bytes(document))
+    heading = original.paragraphs[1]
+    assert heading.role == "section_l2_heading" and heading.unit_kind == "heading"
+    rule = FJNU_RULES_BY_CODE["HEADING_TYPOGRAPHY"]
+    before = evaluate(original, [rule])
+    assert any(v.location["paragraph_index"] == 1 for v in before.violations)
+
+    docx_fixer.fix_typography(document, original, PARAMS, {rule.code}, before.violations)
+    repaired = parse_docx(_word_bytes(document))
+    assert repaired.paragraphs[1].text == title and repaired.paragraphs[1].role == heading.role
+    assert not evaluate(repaired, [rule]).violations
+    node = edit_paragraph(document, 1, ParagraphEditRequest(font_size_pt=10))
+    updated = update_paragraph_ir(repaired, document, node, 1)
+    incremental = evaluate_incremental(updated, repaired, [], [rule], 1)
+    full = evaluate(parse_docx(_word_bytes(document)), [rule])
+    assert incremental.violations == full.violations
+    assert full.violations[0].location["paragraph_index"] == 1
+
+
 def test_advisor_mock_json_and_safe_fallback(tmp_path, monkeypatch):
     path = make_fjnu_docx(tmp_path, violation="ABSTRACT_CONTENT_RULES")
     ir = parse_docx(path)
@@ -257,6 +313,7 @@ def test_advisor_mock_json_and_safe_fallback(tmp_path, monkeypatch):
         })}}]})
 
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_model", "deepseek-chat")
     with httpx.Client(transport=httpx.MockTransport(reply)) as http:
         advice = llm_advisor.advise(ir, book, PARAMS, selected, instruction="保留版面", client=http)
     assert advice.llm_used
@@ -299,6 +356,62 @@ def _session(client, template_id, path):
     run = _json(_upload(client, template_id, path), 201)["results"][0]
     url = f"{API}/check-runs/{run['id']}/revisions"
     return run, url, _json(client.post(url), 201)
+
+
+def test_legacy_cached_violations_are_merged_in_read_and_saved_on_revision(
+    client, master, tmp_path, db_sessions, monkeypatch,
+):
+    monkeypatch.setattr(settings, "llm_api_key", None)
+    path = tmp_path / "20260001_测试.pdf"
+    sample = _PdfSample(None)
+    with closing(sample.pdf):
+        sample.new_page()
+        sample.heading(CHAPTER)
+        sample.text("异常格式段落", 150, 9)
+        sample.pdf.save(path)
+    _, _, created = _session(client, master["id"], path)
+    session_id = UUID(created["id"])
+    with db_sessions.begin() as db:
+        session = db.get(RevisionSession, session_id)
+        issues = session.current_violations
+        original = next(issue for issue in issues if issue["rule_code"] == "BODY_TYPOGRAPHY")
+        duplicate = original | {"id": str(uuid4()), "expected": "第二项要求", "severity": "warning"}
+        session.current_violations = [*issues, duplicate]
+        session.warning_count += 1
+        session.current_ir = session.current_ir | {"_original_violations": [*issues, duplicate | {"severity": "error"}]}
+        session.original_error_count += 1
+
+    url = f"{API}/revisions/{session_id}"
+    detail = _json(client.get(url))
+    body, = [issue for issue in detail["violations"] if issue["rule_code"] == "BODY_TYPOGRAPHY"]
+    assert body["expected"].endswith("；第二项要求") and body["severity"] == "error"
+    assert (detail["warning_count"], detail["original_error_count"]) == (
+        created["warning_count"], created["original_error_count"],
+    )
+    saved = _json(client.post(f"{url}/auto-fix", json={"rule_codes": ["BODY_TYPOGRAPHY"]}))
+    assert saved["violations"] == detail["violations"]
+    with db_sessions() as db:
+        session = db.get(RevisionSession, session_id)
+        assert len(session.current_violations) == len(session.current_ir["_original_violations"]) == len(issues)
+
+
+def test_revision_creation_rejudges_historical_severity_with_current_rules(client, master, tmp_path):
+    item = next(rule for rule in master["rule_items"] if rule["rule_code"] == "LINE_SPACING_MIN")
+    patch_url = f"{API}/rule-items/{item['id']}"
+    _json(client.patch(patch_url, json={"severity": "error"}))
+    path = make_fjnu_docx(tmp_path, violation="LINE_SPACING_MIN")
+    run = _json(_upload(client, master["id"], path), 201)["results"][0]
+    assert run["verdict"] == "fail" and run["error_count"] == 1
+    _json(client.patch(patch_url, json={"severity": "warning"}))
+
+    session = _json(client.post(f"{API}/check-runs/{run['id']}/revisions"), 201)
+    assert session["verdict"] == "pass" and session["warning_count"] == 1
+    assert session["error_count"] == session["original_error_count"] == 0
+    item, = session["violations"]
+    assert item["severity"] == "warning" and UUID(item["id"]).version == 5
+    assert [(e["severity"], e["original_count"]) for e in session["rulebook"]] == [("warning", 1)]
+    historical = _json(client.get(f"{API}/check-runs/{run['id']}"))
+    assert historical["violations"][0]["severity"] == "error"
 
 
 def test_revision_http_workflow_including_native_files_and_conversion(client, master, tmp_path, db_sessions, monkeypatch):
@@ -403,6 +516,56 @@ def test_read_only_pdf_suggestions_and_failed_run_boundaries(client, master, tmp
     _json(client.post(f"{API}/check-runs/{failed['id']}/revisions"), 400)
 
 
+def test_existing_pdf_revision_refreshes_findings_and_advice_when_rules_change(
+    client, master, tmp_path, db_sessions, monkeypatch,
+):
+    monkeypatch.setattr(settings, "llm_api_key", None)
+    path = tmp_path / "20260001_测试.pdf"
+    sample = _PdfSample(None)
+    with closing(sample.pdf):
+        sample.new_page("I")
+        sample.heading("摘要")
+        sample.text("研究采用文档分析法。", 140)
+        sample.text("关键词：版面;结构;测试", 162)
+        sample.pdf.save(path)
+    code = "ABSTRACT_CONTENT_RULES"
+    run, _, created = _session(client, master["id"], path)
+    base = f"{API}/revisions/{created['id']}"
+    options = {"rule_codes": [code]}
+    suggested = _json(client.post(f"{base}/auto-fix", json=options))
+    issues = [v for v in suggested["violations"] if v["rule_code"] == code]
+    assert issues and all(v["severity"] == "error" for v in issues)
+    assert any("版面；结构；测试" in diff["after_text"] for diff in suggested["changes"])
+    session_id = UUID(created["id"])
+    with db_sessions() as db:
+        original_signature = db.get(RevisionSession, session_id).current_ir["_rules_signature"]
+
+    item = next(rule for rule in master["rule_items"] if rule["rule_code"] == code)
+    _json(client.patch(f"{API}/rule-items/{item['id']}", json={"severity": "warning"}))
+    adviser = llm_advisor.advise
+    seen = []
+
+    def record_advice(document, rulebook, *args, **kwargs):
+        seen.extend((e.severity, e.status) for e in rulebook if e.rule_code == code)
+        return adviser(document, rulebook, *args, **kwargs)
+
+    monkeypatch.setattr(llm_advisor, "advise", record_advice)
+    refreshed = _json(client.post(f"{base}/auto-fix", json=options))
+    assert seen and set(seen) == {("warning", "open")}
+    current = [v for v in refreshed["violations"] if v["rule_code"] == code]
+    assert [v["actual"] for v in current] == [v["actual"] for v in issues]
+    assert {v["severity"] for v in current} == {"warning"}
+    assert refreshed["error_count"] == suggested["error_count"] - len(issues)
+    assert refreshed["warning_count"] == suggested["warning_count"] + len(issues)
+    assert _json(client.get(base))["violations"] == refreshed["violations"]
+    with db_sessions() as db:
+        stored = db.get(RevisionSession, session_id).current_ir
+        assert stored["_rules_signature"] != original_signature
+        assert {v["severity"] for v in stored["_original_violations"] if v["rule_code"] == code} == {"warning"}
+    historical = _json(client.get(f"{API}/check-runs/{run['id']}"))
+    assert {v["severity"] for v in historical["violations"] if v["rule_code"] == code} == {"error"}
+
+
 def test_revision_feedback_and_sessions_cascade_from_run(client, master, tmp_path, db_sessions, monkeypatch):
     monkeypatch.setattr(settings, "llm_api_key", None)
     run, _, revision = _session(client, master["id"], make_fjnu_docx(tmp_path, violation="REQUIRED_SECTIONS"))
@@ -425,6 +588,7 @@ def test_auto_fix_uses_advisor_and_records_real_text_diff(client, master, tmp_pa
     keywords = next(p for p in initial["current_paragraphs"] if p["role"] == "keywords_cn")
     base = f"{API}/revisions/{initial['id']}"
     monkeypatch.setattr(settings, "llm_api_key", "local-test-key")
+    monkeypatch.setattr(settings, "llm_model", "deepseek-chat")
     advise = llm_advisor.advise
 
     def response(request):

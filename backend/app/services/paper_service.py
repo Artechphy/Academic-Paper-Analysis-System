@@ -48,18 +48,24 @@ def prepare_paper(data: bytes, filename: str) -> Paper:
         sha256=digest,
         storage_path=str(path),
     )
+    parse_paper(paper, data)
+    return paper
+
+
+def parse_paper(paper: Paper, data: bytes) -> None:
     try:
-        document = parse_document(data, filename)
+        document = parse_document(data, paper.file_name)
     except ParseError as exc:
         paper.parse_status = "failed"
         paper.parse_error = str(exc)
-        return paper
+        paper.parsed_ir = paper.page_count = paper.detected_title = None
+        return
 
     paper.parse_status = "success"
+    paper.parse_error = None
     paper.page_count = document.page_count
     paper.detected_title = next(
         (p.text[:512] for p in document.paragraphs if p.role == "cover_title"),
         None,
     )
     paper.parsed_ir = document.model_dump(mode="json")
-    return paper

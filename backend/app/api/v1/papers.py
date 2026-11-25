@@ -25,9 +25,12 @@ def recheck(
     paper_id: UUID, request: RecheckRequest, db: Annotated[Session, Depends(get_db)]
 ) -> CheckRunDetail:
     with db.begin():
-        paper = db.get(Paper, paper_id)
+        paper = db.get(Paper, paper_id, with_for_update=request.reparse)
         if paper is None:
             raise HTTPException(status_code=404, detail="论文不存在")
         if db.get(RuleSet, request.rule_set_id) is None:
             raise HTTPException(status_code=404, detail="规则模板不存在")
-        return check_service.recheck(db, paper, request.rule_set_id)
+        try:
+            return check_service.recheck(db, paper, request.rule_set_id, reparse=request.reparse)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="论文原件不存在。") from exc

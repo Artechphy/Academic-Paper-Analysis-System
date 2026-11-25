@@ -14,9 +14,9 @@ from docx.oxml.ns import qn
 from sqlalchemy import case, select
 
 from app.config import settings
-from app.db.models import CheckRun, CheckViolation, Paper, RevisionFeedback, RevisionSession, RuleSet
+from app.db.models import CheckRun, Paper, RevisionFeedback, RevisionSession, RuleSet
 from app.db.seed import DOCTOR_PARAM_OVERRIDES, FJNU_RULES_BY_CODE
-from app.engine.evaluator import evaluate
+from app.engine.evaluator import evaluate, merge_paragraph_violations
 from app.parsers.base import cover_elements, summarize_document
 from app.parsers.docx_parser import parse_docx
 from app.revisions import docx_fixer, llm_advisor
@@ -42,11 +42,16 @@ def _feedbacks(db, session_id):
     )).all()
 
 
-def _original_violations(db, run_id):
-    values = db.scalars(select(CheckViolation).where(CheckViolation.check_run_id == run_id).order_by(
-        CheckViolation.rule_code, CheckViolation.id,
-    )).all()
-    return [ViolationResponse.model_validate(value) for value in values]
+def _original_ir(session, paper):
+    return session.current_ir.get("_original_ir", paper.parsed_ir)
+
+
+def _original_violations(session, paper, rules, *, pdf_result=None):
+    saved = session.current_ir.get("_original_violations")
+    if saved is not None and session.current_ir.get("_rules_signature") == _rule_signature(rules):
+        return [issue.model_dump(mode="json") for issue in _normalized_issues(saved)]
+    result = pdf_result if pdf_result is not None else evaluate(_original_ir(session, paper), rules)
+    return [issue.model_dump(mode="json") for issue in _responses(result.violations, session.id)]
 
 
 def _responses(violations, session_id):
@@ -63,13 +68,19 @@ def _responses(violations, session_id):
     return responses
 
 
+def _normalized_issues(items):
+    return merge_paragraph_violations(ViolationResponse.model_validate(item) for item in items)
+
+
 def _rule_signature(rules):
     data = [(str(rule.id), rule.rule_code, rule.enabled, rule.severity, rule.applies_to, rule.params) for rule in rules]
     return sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
-def _snapshot(document, rules):
-    return document.model_dump(mode="json") | {"_rules_signature": _rule_signature(rules)}
+def _snapshot(document, rules, original_violations):
+    return document.model_dump(mode="json") | {
+        "_rules_signature": _rule_signature(rules), "_original_violations": original_violations,
+    }
 
 
 def _rule_params(rules, file_ext):
@@ -77,24 +88,40 @@ def _rule_params(rules, file_ext):
 
 
 def _get(db, session_id, *, lock=False):
-    session = db.scalar(select(RevisionSession).where(RevisionSession.id == session_id).with_for_update()
-                        if lock else select(RevisionSession).where(RevisionSession.id == session_id))
-    if session is None:
+    query = select(RevisionSession, Paper).join(Paper, Paper.id == RevisionSession.paper_id)
+    query = query.where(RevisionSession.id == session_id)
+    row = db.execute(query.with_for_update(of=RevisionSession) if lock else query).one_or_none()
+    if row is None:
         raise RevisionNotFound("修订会话不存在。")
-    return session, db.get(Paper, session.paper_id)
+    session, paper = row
+    return session, paper
 
 
 def _detail(db, session, paper):
+    issues = _existing_issues(session)
+    saved = session.current_ir.get("_original_violations")
+    original = _normalized_issues(saved) if saved is not None else None
+    errors = sum(issue.severity == "error" for issue in issues)
+    original_errors = (sum(issue.severity == "error" for issue in original)
+                       if original is not None else session.original_error_count)
+    rulebook = session.rulebook
+    if len(issues) != len(session.current_violations) or original is not None and len(original) != len(saved):
+        rules = db.scalars(rule_items_query(session.rule_set_id)).all()
+        if original is None:
+            original = _original_violations(session, paper, rules)
+            original_errors = sum(issue["severity"] == "error" for issue in original)
+        rulebook = consolidate(issues, original, rules, notes=_prior_notes(session), editable=paper.file_ext == "docx")
     return RevisionSessionDetail(
         **{key: getattr(session, key) for key in (
             "id", "check_run_id", "paper_id", "rule_set_id", "target_file_name", "version", "comparison_ready",
-            "annotated_page_mode", "llm_used", "llm_model", "verdict", "score", "error_count", "warning_count",
-            "original_error_count", "rulebook", "changes", "modified_paragraphs", "updated_at",
+            "annotated_page_mode", "llm_used", "llm_model", "verdict", "score",
+            "changes", "modified_paragraphs", "updated_at",
         )},
         file_name=paper.file_name, file_ext=paper.file_ext, editable=paper.file_ext == "docx",
         annotated_pdf_ready=bool(session.annotated_pdf_path and Path(session.annotated_pdf_path).is_file()),
-        original_paragraphs=paper.parsed_ir["paragraphs"], current_paragraphs=session.current_ir["paragraphs"],
-        violations=session.current_violations, feedbacks=_feedbacks(db, session.id),
+        original_paragraphs=_original_ir(session, paper)["paragraphs"], current_paragraphs=session.current_ir["paragraphs"],
+        violations=issues, rulebook=rulebook, error_count=errors, warning_count=len(issues) - errors,
+        original_error_count=original_errors, feedbacks=_feedbacks(db, session.id),
     )
 
 
@@ -131,24 +158,26 @@ def create(db, run_id, *, force_new=False):
     run = db.scalar(select(CheckRun).where(CheckRun.id == run_id).with_for_update())
     if run is None:
         raise RevisionNotFound("检测记录不存在。")
-    paper = db.get(Paper, run.paper_id)
-    if paper.parse_status != "success" or paper.parsed_ir is None:
-        raise ValueError("仅能修订已成功解析的论文。")
+    paper = db.get(Paper, run.paper_id, with_for_update=True)
     if not force_new:
         existing = db.scalar(select(RevisionSession).where(RevisionSession.check_run_id == run_id).order_by(
             RevisionSession.updated_at.desc(), RevisionSession.created_at.desc(), RevisionSession.id.desc(),
         ).limit(1))
         if existing is not None:
             return _detail(db, existing, paper)
+    if paper.parse_status != "success" or paper.parsed_ir is None:
+        raise ValueError("仅能修订已成功解析的论文。")
     rules = db.scalars(rule_items_query(run.rule_set_id)).all()
-    original = _original_violations(db, run_id)
     document = DocumentIR.model_validate(paper.parsed_ir)
+    result = evaluate(document, rules)
+    session_id = uuid4()
+    original = [issue.model_dump(mode="json") for issue in _responses(result.violations, session_id)]
     now = datetime.now(timezone.utc)
     session = RevisionSession(
-        id=uuid4(), check_run_id=run.id, paper_id=paper.id, rule_set_id=run.rule_set_id,
-        target_file_name=paper.file_name, verdict=run.verdict, score=run.score, error_count=run.error_count,
-        warning_count=run.warning_count, original_error_count=run.error_count, current_ir=_snapshot(document, rules),
-        current_violations=[issue.model_dump(mode="json") for issue in original],
+        id=session_id, check_run_id=run.id, paper_id=paper.id, rule_set_id=run.rule_set_id,
+        target_file_name=paper.file_name, verdict=result.verdict, score=result.score, error_count=result.error_count,
+        warning_count=result.warning_count, original_error_count=result.error_count,
+        current_ir=_snapshot(document, rules, original), current_violations=original,
         rulebook=[entry.model_dump(mode="json") for entry in consolidate(original, original, rules, editable=paper.file_ext == "docx")],
         changes=[], modified_paragraphs=[], created_at=now, updated_at=now,
     )
@@ -174,7 +203,7 @@ def _current(session):
 
 
 def _existing_issues(session):
-    return [ViolationResponse.model_validate(item) for item in session.current_violations]
+    return _normalized_issues(session.current_violations)
 
 
 def _prior_notes(session):
@@ -199,19 +228,33 @@ def _advance(session):
     session.annotated_page_mode = None
 
 
-def _recompute(db, session, paper, before, document, rules, result=None, *, sources=None, summary="", notes=None,
-               reasons=None):
+def _evaluate_on_rule_change(session, paper, document, rules):
+    if session.current_ir.get("_rules_signature") != _rule_signature(rules):
+        # PDF suggestions are a comparison preview. Findings describe the uploaded PDF.
+        return evaluate(_original_ir(session, paper) if paper.file_ext == "pdf" else document, rules)
+    return None
+
+
+def _recompute(session, paper, before, document, rules, result=None, *, sources=None, summary="", notes=None,
+               reasons=None, original_violations=None):
+    previous_notes = _prior_notes(session)
+    if result is None:
+        result = _evaluate_on_rule_change(session, paper, document, rules)
     if result is not None:
         session.verdict, session.score = result.verdict, result.score
-        session.error_count, session.warning_count = result.error_count, result.warning_count
-        session.current_violations = [v.model_dump(mode="json") for v in _responses(result.violations, session.id)]
-    original_violations = _original_violations(db, session.check_run_id)
-    previous_notes = _prior_notes(session)
+    issues = _responses(result.violations, session.id) if result is not None else _existing_issues(session)
+    session.current_violations = [issue.model_dump(mode="json") for issue in issues]
+    session.error_count = sum(issue.severity == "error" for issue in issues)
+    session.warning_count = len(issues) - session.error_count
+    if original_violations is None:
+        original_violations = _original_violations(session, paper, rules,
+                                                   pdf_result=result if paper.file_ext == "pdf" else None)
+    session.original_error_count = sum(issue["severity"] == "error" for issue in original_violations)
     previous_notes.update(notes or {})
     session.rulebook = [entry.model_dump(mode="json") for entry in consolidate(
         session.current_violations, original_violations, rules, notes=previous_notes, editable=paper.file_ext == "docx",
     )]
-    original = DocumentIR.model_validate(paper.parsed_ir)
+    original = DocumentIR.model_validate(_original_ir(session, paper))
     prior_diffs = {diff["paragraph_index"]: diff for diff in session.changes}
     changes = []
     before_by_index = {p.index: p for p in before.paragraphs}
@@ -230,7 +273,10 @@ def _recompute(db, session, paper, before, document, rules, result=None, *, sour
             changes.append(diff.model_dump(mode="json"))
     session.changes = changes
     session.modified_paragraphs = [diff["paragraph_index"] for diff in changes]
-    session.current_ir = _snapshot(document, rules)
+    snapshot = _snapshot(document, rules, original_violations)
+    if "_original_ir" in session.current_ir:
+        snapshot["_original_ir"] = session.current_ir["_original_ir"]
+    session.current_ir = snapshot
     _advance(session)
 
 
@@ -252,7 +298,7 @@ def edit(db, session_id, index, request):
     if layout_changed:
         current = parse_docx(data, session.target_file_name)
     else:
-        restored = ParagraphIR.model_validate(paper.parsed_ir["paragraphs"][index]) if request.revert else None
+        restored = ParagraphIR.model_validate(_original_ir(session, paper)["paragraphs"][index]) if request.revert else None
         current = update_paragraph_ir(before, docx, element, index, restored=restored)
     previous = _existing_issues(session)
     rules = db.scalars(rule_items_query(session.rule_set_id)).all()
@@ -261,7 +307,7 @@ def edit(db, session_id, index, request):
     else:
         result = evaluate_incremental(current, before, previous, rules, index)
     resolved = resolved_findings(previous, result.violations)
-    _recompute(db, session, paper, before, current, rules, result, sources={index: "manual"},
+    _recompute(session, paper, before, current, rules, result, sources={index: "manual"},
                summary="已还原原稿段落" if request.revert else "已手动调整段落")
     _write_copy(db, session, data)
     db.flush()
@@ -310,7 +356,7 @@ def document_settings(db, session_id, request):
     else:
         current = before.model_copy(update={"file_name": target})
     session.target_file_name = target
-    _recompute(db, session, paper, before, current, rules, evaluate(current, rules), summary="已修复文档设置")
+    _recompute(session, paper, before, current, rules, evaluate(current, rules), summary="已修复文档设置")
     if selected:
         _write_copy(db, session, data)
     db.flush()
@@ -356,12 +402,15 @@ def auto_fix(db, session_id, request):
     rules = db.scalars(rule_items_query(session.rule_set_id)).all()
     params = _rule_params(rules, paper.file_ext)
     before = _current(session)
-    findings = _existing_issues(session)
     selected = set(params if request.rule_codes is None else request.rule_codes)
     if selected - params.keys():
         raise ValueError("所选规则未启用或不适用于当前论文。")
     code = next(iter(selected)) if len(selected) == 1 else None
-    entries = consolidate(findings, _original_violations(db, session.check_run_id), rules,
+    refreshed = _evaluate_on_rule_change(session, paper, before, rules)
+    findings = refreshed.violations if refreshed is not None else _existing_issues(session)
+    original_violations = _original_violations(session, paper, rules,
+                                               pdf_result=refreshed if paper.file_ext == "pdf" else None)
+    entries = consolidate(findings, original_violations, rules,
                           notes=_prior_notes(session), editable=paper.file_ext == "docx")
     instruction = request.instruction.strip() if request.instruction else None
     history = [item.instruction for item in _feedbacks(db, session.id) if item.author == "user"]
@@ -392,13 +441,13 @@ def auto_fix(db, session_id, request):
         current = before.model_copy(deep=True)
         sources = _apply_replacements(None, current, output.text_replacements)
         summarize_document(current, text_page_ratio=before.stats.text_page_ratio)
-        result = None
+        result = refreshed
     if not advice.llm_used:
         sources = dict.fromkeys(sources, "rule")
     session.comparison_ready = True
     session.llm_used = advice.llm_used
     session.llm_model = settings.llm_model[:64] if advice.llm_used else None
-    _recompute(db, session, paper, before, current, rules, result, sources=sources,
+    _recompute(session, paper, before, current, rules, result, sources=sources, original_violations=original_violations,
                summary=output.summary, notes=output.rulebook_notes,
                reasons={change.paragraph_index: change.reason for change in output.text_replacements})
     if paper.file_ext == "docx":
@@ -425,7 +474,7 @@ def export_pdf(db, session_id, page_mode):
             source = convert_docx_to_pdf(source, settings.revisions_dir.resolve() / "pdf-cache")
             paragraphs = _current(session).paragraphs
         else:
-            paragraphs = DocumentIR.model_validate(paper.parsed_ir).paragraphs
+            paragraphs = DocumentIR.model_validate(_original_ir(session, paper)).paragraphs
         target = _directory(session) / f"annotations-v{session.version}-{page_mode}-{uuid4().hex}.pdf"
         count = compile_annotated_pdf(
             source, target, [RulebookEntry.model_validate(entry) for entry in session.rulebook],

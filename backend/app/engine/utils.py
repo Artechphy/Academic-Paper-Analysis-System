@@ -11,10 +11,13 @@ FONT_FAMILIES = {
                "stsongtitc", "fangzhengshusong", "hyshusongerkw", "宋体", "华文宋体", "方正书宋",
                "新宋体", "宋體", "fzss", "fzshusong", "åä12"),
     "simhei": ("simhei", "heitisc", "stheiti", "heiti", "hyzhongheikw", "黑体", "黑體", "华文黑体"),
-    "times_new_roman": ("timesnewromanps", "timesnewroman", "timesroman", "times"),
+    "times_new_roman": ("timesnewromanps", "timesnewroman", "timesroman", "times",
+                        "texgyretermesx", "texgyretermes", "nimbusromno9l"),
     "microsoft_yahei": ("microsoftyahei", "微软雅黑", "微軟雅黑"),
 }
-FONT_SUFFIX = re.compile(r"(?:psmt|ps|mt|std|regular|roman|light|book|bold|italic|ital|oblique|medium|semibold|demibold|heavy|black)+$")
+FONT_SUFFIX = re.compile(
+    r"(?:psmt|ps|mt|std|regular|roman|light|book|bold|italic|ital|oblique|medium|semibold|demibold|heavy|black|identity[hv])+$"
+)
 ROMAN = re.compile(r"M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})", re.I)
 CHAPTER = re.compile(r"^第\s*([一二三四五六七八九十百零〇两\d]+)\s*章[\s、.：:]*\S")
 ENGLISH_CHAPTER = re.compile(r"^chapter\s+(\w+)\s*[.:]?\s+(?=\S)", re.I)

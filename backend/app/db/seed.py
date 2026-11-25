@@ -1,7 +1,7 @@
 """Install the built-in rule templates with `python -m app.db.seed`."""
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,6 +20,7 @@ class RuleSeed:
     description: str
     params: dict[str, Any]
     applies_to: str = "both"
+    severity: Literal["error", "warning"] = "error"
 
 
 @dataclass(frozen=True)
@@ -66,10 +67,12 @@ FJNU_MASTER_RULES = (
             "top_mm": 30, "bottom_mm": 30, "left_mm": 29, "right_mm": 28,
             "docx_tolerance_mm": 1.5, "pdf_tolerance_mm": 5,
         },
+        severity="warning",
     ),
     RuleSeed(
         "LINE_SPACING_MIN", "page", "最小行距", "行距至少 22pt，DOCX 最低实测 21.5pt，PDF 按基线间距估算。",
         {"min_pt": 22, "docx_tolerance_pt": 0.5, "pdf_measurement": "baseline"},
+        severity="warning",
     ),
     RuleSeed(
         "HEADER_FORMAT", "header_footer", "奇偶页页眉", "奇数页页眉显示章及标题，偶数页显示对应的福师大学位论文名称。",
@@ -311,7 +314,7 @@ def seed_builtin_templates(session: Session) -> None:
                 "category": rule.category,
                 "name": rule.name,
                 "description": rule.description,
-                "severity": "error",
+                "severity": rule.severity,
                 "applies_to": rule.applies_to,
                 "params": rule.params,
                 "sort_order": position,

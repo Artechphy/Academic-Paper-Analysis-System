@@ -16,6 +16,7 @@ class RecheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rule_set_id: UUID
+    reparse: bool = False
 
 
 class CheckRunSummary(BaseModel):

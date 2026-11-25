@@ -6,7 +6,8 @@ import re
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-from app.engine.evaluator import EvaluationResult, Violation, _RuleConfig, evaluate
+from app.engine.evaluator import EvaluationResult, Violation, _RuleConfig, evaluate, merge_paragraph_violations
+from app.engine.rules_catalog import CHINESE_BODY_MIN_CHARS
 from app.engine.utils import HAN, chapter_number, normalize_font_name
 from app.parsers.base import analyze_document
 from app.parsers.docx_parser import TRANSPARENT_WRAPPERS, _Styles, _paragraph, _run_text, _runs, _walk
@@ -200,6 +201,11 @@ def evaluate_incremental(document, previous, previous_violations, rule_items, pa
     affected = {"COVER_ELEMENTS"} if old.section_key == "cover" or new.section_key == "cover" else set()
     if text_changed or roles_changed:
         affected |= TEXT_RULES | {"FIGURE_TABLE_CAPTION"}
+    language_scope_changed = ((previous.stats.body_chinese_chars >= CHINESE_BODY_MIN_CHARS)
+                              != (document.stats.body_chinese_chars >= CHINESE_BODY_MIN_CHARS))
+    if (language_scope_changed or new.role == "reference_entry"
+            or text_changed and bool(HAN.search(old.text)) != bool(HAN.search(new.text))):
+        affected.add("BODY_TYPOGRAPHY")
     if old.alignment != new.alignment and new.role in {"figure_caption", "table_caption"}:
         affected.add("FIGURE_TABLE_CAPTION")
     if roles_changed:
@@ -226,7 +232,10 @@ def evaluate_incremental(document, previous, previous_violations, rule_items, pa
             continue
         current = before.get(code, [])
         applies = _applicable(document, rule)
-        if code in affected or code in LOCAL_RULES and (roles_changed or rule.params.get("require_consistent_size")):
+        shared = any(paragraph_index in issue.location.get("paragraph_indices", []) for issue in current)
+        if code in affected or code in LOCAL_RULES and (
+            roles_changed or shared or rule.params.get("require_consistent_size")
+        ):
             fresh = evaluate(document, [item])
             current, applies = fresh.violations, fresh.skipped_rules_count == 0
         elif code in LOCAL_RULES and applies:
@@ -239,6 +248,7 @@ def evaluate_incremental(document, previous, previous_violations, rule_items, pa
             findings.extend(current)
         else:
             skipped += 1
+    findings = merge_paragraph_violations(findings)
     errors = sum(finding.severity == "error" for finding in findings)
     applicable = len(rule_items) - skipped
     return EvaluationResult(
@@ -251,10 +261,12 @@ def evaluate_incremental(document, previous, previous_violations, rule_items, pa
 def resolved_findings(before, after):
     def key(finding):
         location = finding.location
-        return (finding.rule_code, finding.expected, location.get("paragraph_index"),
-                location.get("section"), location.get("page"), location.get("section_index"))
-    remaining = Counter(key(f) for f in before if f.severity == "error")
-    remaining.subtract(key(f) for f in after if f.severity == "error")
+        if (index := location.get("paragraph_index")) is not None:
+            return finding.rule_code, index
+        return (finding.rule_code, finding.expected, location.get("section"), location.get("page"),
+                location.get("section_index"))
+    remaining = Counter(key(f) for f in merge_paragraph_violations(before) if f.severity == "error")
+    remaining.subtract(key(f) for f in merge_paragraph_violations(after) if f.severity == "error")
     return sum(count for count in remaining.values() if count > 0)
 
 

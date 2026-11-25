@@ -1,12 +1,16 @@
 from collections import Counter
 from hashlib import sha256
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import func, inspect, select
 
-from app.db.models import CheckBatch, CheckRun, CheckViolation, Paper
+from app.db.models import CheckBatch, CheckRun, CheckViolation, Paper, RuleItem, RuleSet
+from app.parsers.base import ParseError
 from app.services import check_service, paper_service
 from tests.fixtures_generator import DOCX_RULE_FAILURES, make_damaged, make_fjnu_docx, make_fjnu_pdf
 
@@ -44,6 +48,9 @@ def test_health(client):
 def test_list_clone_and_import_templates(client, master):
     assert len(master["rule_items"]) == master["rule_count"] == 21
     assert len(master["manual_checklist"]) == 5
+    assert {item["rule_code"] for item in master["rule_items"] if item["severity"] == "warning"} == {
+        "LINE_SPACING_MIN", "PAGE_MARGINS",
+    }
 
     payload = {"code": "custom_master", "name": "硕士自定义", "source_rule_set_id": master["id"]}
     clone = _json(client.post(f"{API}/rule-sets", json=payload), 201)
@@ -203,6 +210,76 @@ def test_recheck_uses_snapshot_and_updated_rules(client, master, tmp_path, db_se
     assert overview["top_violations"][0]["affected_paper_count"] == 1
 
 
+def test_check_run_violations_sort_by_page_paragraph_severity_rule_and_id(client, master, tmp_path, db_sessions):
+    path = make_fjnu_docx(tmp_path)
+    run = _json(_upload(client, master["id"], path), 201)["results"][0]
+    rows = [
+        (1, {"page": 5, "paragraph_index": 0}, "error", "X"),
+        (3, {"page": 2, "paragraph_index": 3}, "error", "A"),
+        (2, {"page": 2, "paragraph_index": 3}, "error", "A"),
+        (4, {"page": 2, "paragraph_index": 3}, "error", "B"),
+        (5, {"page": 1, "paragraph_index": 20}, "warning", "A"),
+        (6, {}, "warning", "A"),
+        (7, {"page": 2}, "error", "A"),
+        (8, {"page": 2, "paragraph_index": 0}, "warning", "A"),
+        (9, {"page": 2, "paragraph_index": 3}, "warning", "A"),
+        (10, {"paragraph_index": 0}, "error", "B"),
+    ]
+    with db_sessions.begin() as db:
+        db.add_all(CheckViolation(id=UUID(int=id_), check_run_id=UUID(run["id"]), location=location,
+                                  severity=severity, rule_code=code, category="page", rule_name=code,
+                                  expected="要求", actual="实际", message="修正")
+                   for id_, location, severity, code in rows)
+
+    issues = _json(client.get(f"{API}/check-runs/{run['id']}"))["violations"]
+    assert [UUID(item["id"]).int for item in issues] == [6, 10, 5, 7, 8, 2, 3, 4, 9, 1]
+
+
+def test_reparse_refreshes_persisted_snapshot_preserves_active_revision_and_handles_errors(
+    client, master, tmp_path, db_sessions, monkeypatch,
+):
+    path = make_fjnu_docx(tmp_path)
+    run = _json(_upload(client, master["id"], path), 201)["results"][0]
+    paper_id = UUID(run["paper_id"])
+    with db_sessions.begin() as db:
+        paper = db.get(Paper, paper_id)
+        original = paper.parsed_ir
+        stale = original | {"page_count": 99, "paragraphs": [
+            p | {"text": "旧版解析标题"} if p["role"] == "cover_title" else p for p in original["paragraphs"]
+        ]}
+        paper.parsed_ir = stale
+        paper.page_count, paper.detected_title, paper.parse_error = 99, "旧版解析标题", "旧状态"
+    session_url = f"{API}/check-runs/{run['id']}/revisions"
+    session = _json(client.post(session_url), 201)
+    recheck_url = f"{API}/papers/{paper_id}/recheck"
+    body = {"rule_set_id": master["id"], "reparse": True}
+
+    fresh = _json(client.post(recheck_url, json=body), 201)
+    assert fresh["verdict"] == "pass" and fresh["parse_status"] == "success"
+    assert fresh["page_count"] == run["page_count"] == fresh["ir_summary"]["page_count"]
+    assert fresh["detected_title"] == run["detected_title"] and fresh["parse_error"] is None
+    with db_sessions() as db:
+        assert db.get(Paper, paper_id).parsed_ir == original
+    existing = _json(client.get(f"{API}/revisions/{session['id']}"))
+    assert existing["original_paragraphs"] == session["original_paragraphs"]
+
+    def cannot_parse(*args, **kwargs):
+        raise ParseError("重解析测试错误")
+
+    monkeypatch.setattr(paper_service, "parse_document", cannot_parse)
+    failed = _json(client.post(recheck_url, json=body), 201)
+    assert failed["verdict"] == "error" and failed["parse_status"] == "failed"
+    assert failed["parse_error"] == "重解析测试错误"
+    assert failed["ir_summary"] is failed["detected_title"] is failed["page_count"] is None
+    with db_sessions() as db:
+        paper = db.get(Paper, paper_id)
+        assert paper.parsed_ir is None
+        Path(paper.storage_path).unlink()
+    missing = _json(client.post(recheck_url, json=body), 404)
+    assert missing["detail"] == "论文原件不存在。"
+    assert _json(client.post(session_url), 201)["id"] == session["id"]
+
+
 def test_deduplicate_bytes_keep_file_names(client, master, tmp_path, db_sessions):
     path = make_fjnu_docx(tmp_path)
     renamed = tmp_path / "renamed.docx"
@@ -273,3 +350,50 @@ def test_empty_queries_and_invalid_requests(client, master):
     files = [("files", ("unsupported.txt", b"not supported"))]
     _json(client.post(f"{API}/batches/check", data={"rule_set_id": master["id"]}, files=files), 422)
     assert _json(client.get(f"{API}/batches")) == []
+
+
+def test_page_margins_warning_keeps_run_passed(client, master, tmp_path):
+    file = make_fjnu_docx(tmp_path, violation="PAGE_MARGINS")
+    batch = _json(_upload(client, master["id"], file), 201)
+    run, = batch["results"]
+    assert run["verdict"] == "pass" and run["error_count"] == 0 and run["warning_count"] > 0
+    assert batch["pass_count"] == 1 and batch["fail_count"] == 0
+    detail = _json(client.get(f"{API}/check-runs/{run['id']}"))
+    assert {v["severity"] for v in detail["violations"]} == {"warning"}
+    assert {v["rule_code"] for v in detail["violations"]} == {"PAGE_MARGINS"}
+
+
+def test_spacing_severity_migration_remembers_only_updated_builtin_version_rows(db_sessions):
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/0003_spacing_rule_severity.py"
+    spec = spec_from_file_location("spacing_severity_migration", path)
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with db_sessions.begin() as db:
+        connection = db.connection()
+        with Operations.context(MigrationContext.configure(connection)):
+            if inspect(connection).has_table("spacing_rule_severity_0003"):
+                migration.downgrade()
+            builtin = db.scalar(select(RuleSet).where(RuleSet.code == "fjnu_master_2019"))
+            spacing, margins = [
+                db.scalar(select(RuleItem).where(RuleItem.rule_set_id == builtin.id, RuleItem.rule_code == code))
+                for code in ("LINE_SPACING_MIN", "PAGE_MARGINS")
+            ]
+            spacing.severity = "error"
+            assert margins.severity == "warning"
+            untouched = []
+            for code, version in (("fjnu_master_2019", "2.0.0"), ("local_custom", "1.0.0")):
+                future = RuleSet(id=uuid4(), code=code, version=version, name="Test")
+                db.add(future)
+                db.flush()
+                rule = RuleItem(rule_set_id=future.id, rule_code="LINE_SPACING_MIN", category="page",
+                                name="Test", description="Test", severity="error", applies_to="both")
+                db.add(rule)
+                untouched.append(rule)
+            db.flush()
+
+            migration.upgrade()
+            db.expire_all()
+            assert [rule.severity for rule in (spacing, margins, *untouched)] == ["warning", "warning", "error", "error"]
+            migration.downgrade()
+            db.expire_all()
+            assert [rule.severity for rule in (spacing, margins, *untouched)] == ["error", "warning", "error", "error"]

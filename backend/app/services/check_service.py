@@ -2,13 +2,15 @@
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import BinaryIO
 from uuid import UUID
 
-from sqlalchemy import Uuid, case, column, func, select, table, text
+from sqlalchemy import Uuid, column, func, select, table, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from app.db.models import CheckBatch, CheckRun, CheckViolation, Paper, RuleItem, RuleSet
+from app.db.models import CheckBatch, CheckRun, CheckViolation, Paper, RevisionSession, RuleItem, RuleSet
 from app.engine.evaluator import evaluate
 from app.schemas.checks import (
     BatchDetail,
@@ -20,7 +22,7 @@ from app.schemas.checks import (
     Verdict,
 )
 from app.schemas.ir import DocumentIR
-from app.services.paper_service import prepare_paper
+from app.services.paper_service import parse_paper, prepare_paper
 
 _BATCH_SUMMARY = table(
     "v_batch_summary",
@@ -167,20 +169,38 @@ def get_run(db: Session, run_id: UUID) -> CheckRunDetail | None:
     if row is None:
         return None
     violations = db.scalars(
-        select(CheckViolation)
-        .where(CheckViolation.check_run_id == run_id)
-        .order_by(
-            case((CheckViolation.severity == "error", 0), else_=1),
-            CheckViolation.rule_code,
-            CheckViolation.id,
-        )
+        select(CheckViolation).where(CheckViolation.check_run_id == run_id)
     ).all()
+    violations.sort(key=_violation_order)
     data = dict(row)
     snapshot = data.pop("parsed_ir")
     return CheckRunDetail(**data, ir_summary=_ir_summary(snapshot), violations=violations)
 
 
-def recheck(db: Session, paper: Paper, rule_set_id: UUID) -> CheckRunDetail:
+def _violation_order(violation: CheckViolation):
+    page = violation.location.get("page")
+    index = violation.location.get("paragraph_index")
+    return (page is not None, page or 0, index is not None, index or 0,
+            0 if violation.severity == "error" else 1, violation.rule_code, str(violation.id))
+
+
+def recheck(db: Session, paper: Paper, rule_set_id: UUID, *, reparse: bool = False) -> CheckRunDetail:
+    if reparse:
+        path = Path(paper.storage_path)
+        if not path.is_file():
+            raise FileNotFoundError("论文原件不存在。")
+        previous = paper.parsed_ir
+        parse_paper(paper, path.read_bytes())
+        if previous is not None and previous != paper.parsed_ir:
+            # Active sessions keep the parse and paragraph indices they were created against.
+            sessions = db.scalars(select(RevisionSession).where(RevisionSession.paper_id == paper.id)
+                                  .order_by(RevisionSession.id).with_for_update())
+            for session in sessions:
+                if "_original_ir" not in session.current_ir:
+                    session.current_ir = session.current_ir | {"_original_ir": previous}
+                    # Pinning an old parse must preserve the session-selection order.
+                    flag_modified(session, "updated_at")
+        db.flush()
     rules = db.scalars(rule_items_query(rule_set_id)).all()
     run = _record_run(db, paper, rule_set_id, rules)
     db.flush()
