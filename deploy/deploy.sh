@@ -6,21 +6,33 @@ COMPOSE_FILE="${APP_DIR}/docker-compose.prod.yml"
 ENV_FILE="${APP_DIR}/.env"
 LAST_TAG_FILE="${APP_DIR}/.last_deployed_tag"
 
-ARG_TAG="${1:-}"
-OVERRIDE_IMAGE_TAG="${IMAGE_TAG:-}"
-OVERRIDE_IMAGE_PREFIX="${IMAGE_PREFIX:-}"
+read_env_val() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -F= -v k="$key" '
+    $0 ~ /^[[:space:]]*#/ { next }
+    $1 == k { sub(/^[^=]*=/, ""); print; exit }
+  ' "$ENV_FILE" | tr -d '\r'
+}
 
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
 if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  COMPOSE_ARGS+=(--env-file "$ENV_FILE")
 fi
 
-if [[ -n "$OVERRIDE_IMAGE_PREFIX" ]]; then
-  export IMAGE_PREFIX="$OVERRIDE_IMAGE_PREFIX"
+ARG_TAG="${1:-}"
+FILE_IMAGE_PREFIX="$(read_env_val IMAGE_PREFIX)"
+FILE_IMAGE_TAG="$(read_env_val IMAGE_TAG)"
+FILE_HTTP_PORT="$(read_env_val HTTP_PORT)"
+
+if [[ -n "${IMAGE_PREFIX:-}" ]]; then
+  export IMAGE_PREFIX
+elif [[ -n "$FILE_IMAGE_PREFIX" ]]; then
+  export IMAGE_PREFIX="$FILE_IMAGE_PREFIX"
 fi
-export IMAGE_TAG="${ARG_TAG:-${OVERRIDE_IMAGE_TAG:-${IMAGE_TAG:-latest}}}"
+
+export IMAGE_TAG="${ARG_TAG:-${IMAGE_TAG:-${FILE_IMAGE_TAG:-latest}}}"
+HTTP_PORT="${HTTP_PORT:-${FILE_HTTP_PORT:-80}}"
 
 PREVIOUS_TAG=""
 if [[ -f "$LAST_TAG_FILE" ]]; then
@@ -35,20 +47,20 @@ if [[ -n "${GHCR_USERNAME:-}" && -n "${GHCR_TOKEN:-}" ]]; then
 fi
 
 echo "==> 拉取镜像 (IMAGE_PREFIX=${IMAGE_PREFIX:-ghcr.io/artechphy/academic-paper-analysis-system}, IMAGE_TAG=${IMAGE_TAG})..."
-docker compose -f "$COMPOSE_FILE" pull backend web
+docker compose "${COMPOSE_ARGS[@]}" pull backend web
 
 if [[ "$LOGGED_IN_GHCR" == "true" ]]; then
   docker logout ghcr.io >/dev/null 2>&1 || true
 fi
 
 echo "==> 启动 PostgreSQL 18 并等待健康..."
-docker compose -f "$COMPOSE_FILE" up -d --wait postgres
+docker compose "${COMPOSE_ARGS[@]}" up -d --wait postgres
 
 echo "==> 执行数据库迁移与预置规则种子..."
-docker compose -f "$COMPOSE_FILE" run --rm --no-deps backend sh -c "alembic upgrade head && python -m app.db.seed"
+docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps backend sh -c "alembic upgrade head && python -m app.db.seed"
 
 echo "==> 启动/更新 backend 与 web 服务..."
-docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
 
 HEALTH_URL="http://127.0.0.1:${HTTP_PORT:-80}/api/v1/health"
 echo "==> 校验健康状态 (${HEALTH_URL})..."
@@ -65,11 +77,11 @@ done
 
 if [[ "$HEALTHY" != "true" ]]; then
   echo "::error::健康检查超时，打印最近日志："
-  docker compose -f "$COMPOSE_FILE" logs --tail=80 backend web || true
+  docker compose "${COMPOSE_ARGS[@]}" logs --tail=80 backend web || true
   if [[ -n "$PREVIOUS_TAG" && "$PREVIOUS_TAG" != "$IMAGE_TAG" ]]; then
     echo "==> 回滚到上一可用版本: ${PREVIOUS_TAG}"
     export IMAGE_TAG="$PREVIOUS_TAG"
-    docker compose -f "$COMPOSE_FILE" up -d --remove-orphans || true
+    docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans || true
   fi
   exit 1
 fi
