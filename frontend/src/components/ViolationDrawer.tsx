@@ -8,8 +8,11 @@ import {
   ChevronRight,
   ClipboardCheck,
   FileCheck2,
+  FileText,
+  Layers,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Wand2,
   X,
 } from 'lucide-react';
@@ -33,9 +36,11 @@ interface ViolationDrawerProps {
   rechecking: boolean;
   openingRevision: boolean;
   onClose: () => void;
-  onRecheck: (paperId: string, ruleSetId: string) => Promise<void>;
+  onRecheck: (paperId: string, ruleSetId: string, reparse?: boolean) => Promise<void>;
   onOpenRevision: (runId: string) => void;
 }
+
+type ViewMode = 'page' | 'rule';
 
 interface ViolationGroup {
   ruleCode: string;
@@ -43,6 +48,36 @@ interface ViolationGroup {
   category: string;
   severity: Severity;
   items: ViolationResponse[];
+}
+
+interface PageParagraphCluster {
+  key: string;
+  paragraphIndex: number | null;
+  section: string | null;
+  excerpt: string | null;
+  pageEnd: number | null;
+  items: ViolationResponse[];
+}
+
+interface PageGroup {
+  key: string;
+  page: number | null;
+  label: string;
+  errorCount: number;
+  warningCount: number;
+  totalCount: number;
+  clusters: PageParagraphCluster[];
+}
+
+function compareByLocation(a: ViolationResponse, b: ViolationResponse): number {
+  const pa = a.location?.page ?? -1;
+  const pb = b.location?.page ?? -1;
+  if (pa !== pb) return pa - pb;
+  const ia = a.location?.paragraph_index ?? -1;
+  const ib = b.location?.paragraph_index ?? -1;
+  if (ia !== ib) return ia - ib;
+  if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
+  return a.rule_code.localeCompare(b.rule_code);
 }
 
 export function ViolationDrawer({
@@ -60,7 +95,9 @@ export function ViolationDrawer({
   const [visible, setVisible] = useState(false);
 
   const [targetRuleSetId, setTargetRuleSetId] = useState('');
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [viewMode, setViewMode] = useState<ViewMode>('page');
+  const [expandedRuleGroups, setExpandedRuleGroups] = useState<Record<string, boolean>>({});
+  const [expandedPageGroups, setExpandedPageGroups] = useState<Record<string, boolean>>({});
   const [showAllItems, setShowAllItems] = useState<Record<string, boolean>>({});
   const [showCapabilities, setShowCapabilities] = useState(false);
   const [checklistOpen, setChecklistOpen] = useState(false);
@@ -92,52 +129,14 @@ export function ViolationDrawer({
     return () => window.clearTimeout(timer);
   }, [open]);
 
-  useEffect(() => {
-    if (!detail) return;
-    setTargetRuleSetId(detail.rule_set_id);
-
-    const counts = new Map<string, { severity: Severity; count: number }>();
-    for (const v of detail.violations) {
-      const existing = counts.get(v.rule_code);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        counts.set(v.rule_code, { severity: v.severity, count: 1 });
-      }
-    }
-    const sortedCodes = Array.from(counts.entries())
-      .sort((a, b) => {
-        if (a[1].severity !== b[1].severity) return a[1].severity === 'error' ? -1 : 1;
-        if (a[1].count !== b[1].count) return b[1].count - a[1].count;
-        return a[0].localeCompare(b[0]);
-      })
-      .map(([code]) => code);
-
-    const expandAll = detail.violations.length <= 15;
-    const initialExpanded: Record<string, boolean> = {};
-    sortedCodes.forEach((code, idx) => {
-      initialExpanded[code] = expandAll || idx < 3;
-    });
-    setExpandedGroups(initialExpanded);
-    setShowAllItems({});
-  }, [detail]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
-
-  const groups = useMemo<ViolationGroup[]>(() => {
+  const ruleGroups = useMemo<ViolationGroup[]>(() => {
     if (!detail) return [];
     const map = new Map<string, ViolationGroup>();
     for (const v of detail.violations) {
       const existing = map.get(v.rule_code);
       if (existing) {
         existing.items.push(v);
+        if (v.severity === 'error') existing.severity = 'error';
       } else {
         map.set(v.rule_code, {
           ruleCode: v.rule_code,
@@ -148,12 +147,126 @@ export function ViolationDrawer({
         });
       }
     }
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
-      if (a.items.length !== b.items.length) return b.items.length - a.items.length;
-      return a.ruleCode.localeCompare(b.ruleCode);
-    });
+    return Array.from(map.values())
+      .map((group) => ({
+        ...group,
+        items: [...group.items].sort(compareByLocation),
+      }))
+      .sort((a, b) => {
+        if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
+        if (a.items.length !== b.items.length) return b.items.length - a.items.length;
+        return a.ruleCode.localeCompare(b.ruleCode);
+      });
   }, [detail]);
+
+  const pageGroups = useMemo<PageGroup[]>(() => {
+    if (!detail) return [];
+    const sorted = [...detail.violations].sort(compareByLocation);
+    const map = new Map<string, { page: number | null; items: ViolationResponse[] }>();
+    for (const v of sorted) {
+      const page = v.location?.page ?? null;
+      const key = page === null ? 'global' : `p-${page}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.items.push(v);
+      } else {
+        map.set(key, { page, items: [v] });
+      }
+    }
+
+    return Array.from(map.entries())
+      .sort((a, b) => {
+        if (a[1].page === null && b[1].page !== null) return -1;
+        if (a[1].page !== null && b[1].page === null) return 1;
+        return (a[1].page ?? 0) - (b[1].page ?? 0);
+      })
+      .map(([key, entry]) => {
+        const clusters: PageParagraphCluster[] = [];
+        const byPara = new Map<number, PageParagraphCluster>();
+        let errorCount = 0;
+        let warningCount = 0;
+
+        for (const item of entry.items) {
+          if (item.severity === 'error') errorCount += 1;
+          else warningCount += 1;
+
+          const loc = item.location ?? {};
+          const pIdx = typeof loc.paragraph_index === 'number' ? loc.paragraph_index : null;
+          if (pIdx !== null) {
+            const existing = byPara.get(pIdx);
+            if (existing) {
+              existing.items.push(item);
+              if (!existing.excerpt && loc.excerpt) existing.excerpt = String(loc.excerpt);
+              if (!existing.section && loc.section) existing.section = String(loc.section);
+              if (
+                typeof loc.page_end === 'number' &&
+                (existing.pageEnd === null || loc.page_end > existing.pageEnd)
+              ) {
+                existing.pageEnd = loc.page_end;
+              }
+              continue;
+            }
+            const cluster: PageParagraphCluster = {
+              key: `${key}-para-${pIdx}`,
+              paragraphIndex: pIdx,
+              section: loc.section ? String(loc.section) : null,
+              excerpt: loc.excerpt ? String(loc.excerpt) : null,
+              pageEnd: typeof loc.page_end === 'number' ? loc.page_end : null,
+              items: [item],
+            };
+            byPara.set(pIdx, cluster);
+            clusters.push(cluster);
+          } else {
+            clusters.push({
+              key: `${key}-item-${item.id}`,
+              paragraphIndex: null,
+              section: loc.section ? String(loc.section) : null,
+              excerpt: loc.excerpt ? String(loc.excerpt) : null,
+              pageEnd: typeof loc.page_end === 'number' ? loc.page_end : null,
+              items: [item],
+            });
+          }
+        }
+
+        return {
+          key,
+          page: entry.page,
+          label: entry.page === null ? '文档级 / 全局规范' : `第 ${entry.page} 页`,
+          errorCount,
+          warningCount,
+          totalCount: entry.items.length,
+          clusters,
+        };
+      });
+  }, [detail]);
+
+  useEffect(() => {
+    if (!detail) return;
+    setTargetRuleSetId(detail.rule_set_id);
+
+    const expandAll = detail.violations.length <= 15;
+    const initialRules: Record<string, boolean> = {};
+    ruleGroups.forEach((group, idx) => {
+      initialRules[group.ruleCode] = expandAll || idx < 3;
+    });
+    setExpandedRuleGroups(initialRules);
+
+    const initialPages: Record<string, boolean> = {};
+    pageGroups.forEach((group, idx) => {
+      initialPages[group.key] = expandAll || idx < 5;
+    });
+    setExpandedPageGroups(initialPages);
+    setShowAllItems({});
+  }, [detail, ruleGroups, pageGroups]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
 
   if (!shouldRender) return null;
 
@@ -169,6 +282,30 @@ export function ViolationDrawer({
         [index]: !prev[detail.paper_id]?.[index],
       },
     }));
+  };
+
+  const handleExpandAll = () => {
+    if (viewMode === 'page') {
+      const next: Record<string, boolean> = {};
+      pageGroups.forEach((g) => {
+        next[g.key] = true;
+      });
+      setExpandedPageGroups(next);
+    } else {
+      const next: Record<string, boolean> = {};
+      ruleGroups.forEach((g) => {
+        next[g.ruleCode] = true;
+      });
+      setExpandedRuleGroups(next);
+    }
+  };
+
+  const handleCollapseAll = () => {
+    if (viewMode === 'page') {
+      setExpandedPageGroups({});
+    } else {
+      setExpandedRuleGroups({});
+    }
   };
 
   return (
@@ -230,7 +367,7 @@ export function ViolationDrawer({
             </button>
           </div>
 
-          {/* Action Bar: Secondary Recheck + Single Primary CTA */}
+          {/* Action Bar: Template + Snapshot Recheck + Reparse Recheck + Primary CTA */}
           {detail && (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E8E6E1] bg-[#FAF9F7] px-3 py-2">
               <div className="text-xs text-[#71717A]">
@@ -256,7 +393,7 @@ export function ViolationDrawer({
                 <button
                   type="button"
                   disabled={rechecking || !targetRuleSetId}
-                  onClick={() => onRecheck(detail.paper_id, targetRuleSetId)}
+                  onClick={() => onRecheck(detail.paper_id, targetRuleSetId, false)}
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#E2E0DA] bg-white px-2.5 text-xs font-medium text-[#18181B] hover:bg-[#F7F7F5] disabled:opacity-55"
                 >
                   {rechecking ? (
@@ -265,6 +402,20 @@ export function ViolationDrawer({
                     <RefreshCw className="h-3.5 w-3.5 text-[#52525B]" />
                   )}
                   <span>免重解析重检</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={rechecking || !targetRuleSetId}
+                  onClick={() => onRecheck(detail.paper_id, targetRuleSetId, true)}
+                  title="从原始文件重新解析并应用最新解析器与规则"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#C7D6E8] bg-[#EFF4FA] px-2.5 text-xs font-medium text-[#1E3A5F] hover:bg-[#E2ECF7] disabled:opacity-55"
+                >
+                  {rechecking ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#1E3A5F]" />
+                  ) : (
+                    <RotateCcw className="h-3.5 w-3.5 text-[#1E3A5F]" />
+                  )}
+                  <span>重新解析并检测</span>
                 </button>
                 {detail.parse_status === 'success' && (
                   <button
@@ -413,40 +564,65 @@ export function ViolationDrawer({
               {/* Violations List */}
               {detail.parse_status === 'success' && (
                 <div className="space-y-2.5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-xs font-semibold text-[#18181B]">
                       违规明细（共{' '}
                       <span className="tabular-nums">{detail.violations.length}</span> 处，涉及{' '}
-                      <span className="tabular-nums">{groups.length}</span> 条规则）
+                      <span className="tabular-nums">{ruleGroups.length}</span> 条规则，
+                      <span className="tabular-nums">{pageGroups.length}</span> 个位置组）
                     </h3>
-                    {groups.length > 0 && (
-                      <div className="flex items-center gap-2 text-[11px]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next: Record<string, boolean> = {};
-                            groups.forEach((g) => {
-                              next[g.ruleCode] = true;
-                            });
-                            setExpandedGroups(next);
-                          }}
-                          className="text-[#1E3A5F] hover:underline"
-                        >
-                          全部展开
-                        </button>
-                        <span className="text-[#D8D5CE]">|</span>
-                        <button
-                          type="button"
-                          onClick={() => setExpandedGroups({})}
-                          className="text-[#71717A] hover:underline"
-                        >
-                          全部收起
-                        </button>
+
+                    {detail.violations.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="inline-flex rounded-lg border border-[#E8E6E1] bg-[#F3F2EE] p-0.5 text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => setViewMode('page')}
+                            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                              viewMode === 'page'
+                                ? 'bg-white text-[#18181B] shadow-2xs'
+                                : 'text-[#52525B] hover:text-[#18181B]'
+                            }`}
+                          >
+                            <FileText className="h-3 w-3" />
+                            <span>按页面顺序</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setViewMode('rule')}
+                            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                              viewMode === 'rule'
+                                ? 'bg-white text-[#18181B] shadow-2xs'
+                                : 'text-[#52525B] hover:text-[#18181B]'
+                            }`}
+                          >
+                            <Layers className="h-3 w-3" />
+                            <span>按规则分组</span>
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[11px]">
+                          <button
+                            type="button"
+                            onClick={handleExpandAll}
+                            className="text-[#1E3A5F] hover:underline"
+                          >
+                            全部展开
+                          </button>
+                          <span className="text-[#D8D5CE]">|</span>
+                          <button
+                            type="button"
+                            onClick={handleCollapseAll}
+                            className="text-[#71717A] hover:underline"
+                          >
+                            全部收起
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  {groups.length === 0 ? (
+                  {detail.violations.length === 0 ? (
                     <div className="flex items-center gap-3 rounded-xl border border-[#BBF7D0] bg-[#ECFDF5] p-4 text-xs text-[#15803D]">
                       <FileCheck2 className="h-5 w-5 shrink-0" />
                       <div>
@@ -456,10 +632,199 @@ export function ViolationDrawer({
                         </div>
                       </div>
                     </div>
+                  ) : viewMode === 'page' ? (
+                    <div className="divide-y divide-[#ECEAE5] overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
+                      {pageGroups.map((pg) => {
+                        const isExpanded = Boolean(expandedPageGroups[pg.key]);
+                        const showAll = Boolean(showAllItems[pg.key]);
+                        const visibleClusters = showAll ? pg.clusters : pg.clusters.slice(0, 8);
+
+                        return (
+                          <div key={pg.key}>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedPageGroups((prev) => ({
+                                  ...prev,
+                                  [pg.key]: !prev[pg.key],
+                                }))
+                              }
+                              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-[#FAF9F7]"
+                            >
+                              <div className="flex min-w-0 items-center gap-2.5">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4 shrink-0 text-[#71717A]" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 shrink-0 text-[#71717A]" />
+                                )}
+                                <span className="rounded bg-[#EFF4FA] px-2 py-0.5 text-xs font-semibold tabular-nums text-[#1E3A5F]">
+                                  {pg.label}
+                                </span>
+                                <span className="text-[11px] text-[#71717A]">
+                                  {pg.clusters.length} 处位置
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums">
+                                {pg.errorCount > 0 && (
+                                  <span className="rounded-full bg-[#FEF2F2] px-2 py-0.5 font-semibold text-[#B91C1C]">
+                                    {pg.errorCount} 错误
+                                  </span>
+                                )}
+                                {pg.warningCount > 0 && (
+                                  <span className="rounded-full bg-[#FFFBEB] px-2 py-0.5 font-semibold text-[#B45309]">
+                                    {pg.warningCount} 警告
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="divide-y divide-[#ECEAE5] border-t border-[#ECEAE5] bg-[#FAF9F7]/40">
+                                {visibleClusters.map((cluster) => (
+                                  <div key={cluster.key} className="space-y-2.5 px-4 py-3 text-xs">
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#52525B]">
+                                      {cluster.paragraphIndex !== null && (
+                                        <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 font-medium tabular-nums text-[#18181B]">
+                                          第 {cluster.paragraphIndex + 1} 段
+                                        </span>
+                                      )}
+                                      {pg.page !== null &&
+                                        cluster.pageEnd !== null &&
+                                        cluster.pageEnd !== pg.page && (
+                                          <span className="rounded bg-[#EFF4FA] px-1.5 py-0.5 tabular-nums text-[#1E3A5F]">
+                                            跨第 {pg.page}–{cluster.pageEnd} 页
+                                          </span>
+                                        )}
+                                      {cluster.section && (
+                                        <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[#52525B]">
+                                          区块：{getSectionLabel(cluster.section)}
+                                        </span>
+                                      )}
+                                      {cluster.items.length > 1 && (
+                                        <span className="rounded bg-[#EFF4FA] px-1.5 py-0.5 text-[10px] font-medium text-[#1E3A5F]">
+                                          本段命中 {cluster.items.length} 条规则
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {cluster.excerpt && (
+                                      <blockquote className="rounded-md border-l-2 border-[#D8D5CE] bg-white px-2.5 py-1.5 text-[11px] text-[#52525B] break-all">
+                                        “{cluster.excerpt}”
+                                      </blockquote>
+                                    )}
+
+                                    <div className="space-y-2">
+                                      {cluster.items.map((item) => {
+                                        const isError = item.severity === 'error';
+                                        const highlight = item.location?.highlight_excerpt
+                                          ? String(item.location.highlight_excerpt)
+                                          : null;
+
+                                        return (
+                                          <div
+                                            key={item.id}
+                                            className="rounded-lg border border-[#E8E6E1] bg-white p-2.5 space-y-2"
+                                          >
+                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                              <div className="flex flex-wrap items-center gap-1.5">
+                                                <span
+                                                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                                                    isError
+                                                      ? 'bg-[#FEF2F2] text-[#B91C1C]'
+                                                      : 'bg-[#FFFBEB] text-[#B45309]'
+                                                  }`}
+                                                >
+                                                  {isError ? 'ERROR' : 'WARN'}
+                                                </span>
+                                                <span className="text-xs font-semibold text-[#18181B]">
+                                                  {item.rule_name}
+                                                </span>
+                                                <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] text-[#52525B]">
+                                                  {getCategoryLabel(item.category)}
+                                                </span>
+                                              </div>
+                                              <span className="font-mono text-[10px] text-[#71717A]">
+                                                {item.rule_code}
+                                              </span>
+                                            </div>
+
+                                            {highlight && highlight !== cluster.excerpt && (
+                                              <div className="rounded bg-[#FFF7ED] px-2 py-1 text-[11px] text-[#9A3412] break-all">
+                                                <strong className="font-medium">异常片段：</strong>
+                                                “{highlight}”
+                                              </div>
+                                            )}
+
+                                            <div className="grid gap-2 sm:grid-cols-2">
+                                              <div className="rounded-md border border-[#ECEAE5] bg-[#FAF9F7] px-2.5 py-1.5">
+                                                <div className="text-[10px] font-semibold text-[#71717A]">
+                                                  规范期望值
+                                                </div>
+                                                <div className="mt-0.5 text-xs text-[#18181B] break-words">
+                                                  {item.expected}
+                                                </div>
+                                              </div>
+                                              <div
+                                                className={`rounded-md border px-2.5 py-1.5 ${
+                                                  isError
+                                                    ? 'border-[#FECACA] bg-[#FEF2F2]/60'
+                                                    : 'border-[#FDE68A] bg-[#FFFBEB]/60'
+                                                }`}
+                                              >
+                                                <div
+                                                  className={`text-[10px] font-semibold ${
+                                                    isError ? 'text-[#B91C1C]' : 'text-[#B45309]'
+                                                  }`}
+                                                >
+                                                  实际检测值
+                                                </div>
+                                                <div className="mt-0.5 text-xs text-[#18181B] break-words">
+                                                  {item.actual}
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <p className="text-[11px] text-[#52525B]">
+                                              <strong className="font-medium text-[#18181B]">
+                                                修改建议：
+                                              </strong>
+                                              {item.message}
+                                            </p>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+
+                                {pg.clusters.length > 8 && (
+                                  <div className="bg-white px-4 py-2 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setShowAllItems((prev) => ({
+                                          ...prev,
+                                          [pg.key]: !prev[pg.key],
+                                        }))
+                                      }
+                                      className="text-xs font-medium text-[#1E3A5F] hover:underline"
+                                    >
+                                      {showAll
+                                        ? '收起多余位置（仅显示前 8 处）'
+                                        : `展开本页全部 ${pg.clusters.length} 处（剩余 ${pg.clusters.length - 8} 处）`}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   ) : (
                     <div className="divide-y divide-[#ECEAE5] overflow-hidden rounded-xl border border-[#E8E6E1] bg-white">
-                      {groups.map((group) => {
-                        const isExpanded = Boolean(expandedGroups[group.ruleCode]);
+                      {ruleGroups.map((group) => {
+                        const isExpanded = Boolean(expandedRuleGroups[group.ruleCode]);
                         const showAll = Boolean(showAllItems[group.ruleCode]);
                         const visibleItems = showAll ? group.items : group.items.slice(0, 5);
                         const isError = group.severity === 'error';
@@ -469,7 +834,7 @@ export function ViolationDrawer({
                             <button
                               type="button"
                               onClick={() =>
-                                setExpandedGroups((prev) => ({
+                                setExpandedRuleGroups((prev) => ({
                                   ...prev,
                                   [group.ruleCode]: !prev[group.ruleCode],
                                 }))
@@ -512,12 +877,18 @@ export function ViolationDrawer({
                               <div className="divide-y divide-[#ECEAE5] border-t border-[#ECEAE5] bg-[#FAF9F7]/40">
                                 {visibleItems.map((item) => {
                                   const loc = item.location ?? {};
+                                  const itemIsError = item.severity === 'error';
+                                  const highlight = loc.highlight_excerpt
+                                    ? String(loc.highlight_excerpt)
+                                    : null;
                                   return (
                                     <div key={item.id} className="space-y-2 px-4 py-3 text-xs">
                                       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#52525B]">
                                         {loc.page != null && (
                                           <span className="rounded bg-[#EFF4FA] px-1.5 py-0.5 font-medium tabular-nums text-[#1E3A5F]">
-                                            第 {loc.page} 页
+                                            {loc.page_end && loc.page_end !== loc.page
+                                              ? `第 ${loc.page}–${loc.page_end} 页`
+                                              : `第 ${loc.page} 页`}
                                           </span>
                                         )}
                                         {loc.section && (
@@ -538,6 +909,13 @@ export function ViolationDrawer({
                                         </blockquote>
                                       )}
 
+                                      {highlight && highlight !== String(loc.excerpt ?? '') && (
+                                        <div className="rounded bg-[#FFF7ED] px-2 py-1 text-[11px] text-[#9A3412] break-all">
+                                          <strong className="font-medium">异常片段：</strong>“
+                                          {highlight}”
+                                        </div>
+                                      )}
+
                                       <div className="grid gap-2 sm:grid-cols-2">
                                         <div className="rounded-lg border border-[#E8E6E1] bg-white px-2.5 py-2">
                                           <div className="text-[10px] font-semibold text-[#71717A]">
@@ -549,14 +927,14 @@ export function ViolationDrawer({
                                         </div>
                                         <div
                                           className={`rounded-lg border px-2.5 py-2 ${
-                                            isError
+                                            itemIsError
                                               ? 'border-[#FECACA] bg-[#FEF2F2]/60'
                                               : 'border-[#FDE68A] bg-[#FFFBEB]/60'
                                           }`}
                                         >
                                           <div
                                             className={`text-[10px] font-semibold ${
-                                              isError ? 'text-[#B91C1C]' : 'text-[#B45309]'
+                                              itemIsError ? 'text-[#B91C1C]' : 'text-[#B45309]'
                                             }`}
                                           >
                                             实际检测值
@@ -568,7 +946,9 @@ export function ViolationDrawer({
                                       </div>
 
                                       <p className="text-[11px] text-[#52525B]">
-                                        <strong className="font-medium text-[#18181B]">修改建议：</strong>
+                                        <strong className="font-medium text-[#18181B]">
+                                          修改建议：
+                                        </strong>
                                         {item.message}
                                       </p>
                                     </div>

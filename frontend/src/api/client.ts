@@ -137,11 +137,12 @@ export function getCheckRun(runId: string): Promise<CheckRunDetail> {
 export function recheckPaper(
   paperId: string,
   ruleSetId: string,
+  reparse = false,
 ): Promise<CheckRunDetail> {
   return apiRequest<CheckRunDetail>(`/papers/${paperId}/recheck`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rule_set_id: ruleSetId }),
+    body: JSON.stringify({ rule_set_id: ruleSetId, reparse }),
   });
 }
 

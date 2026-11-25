@@ -103,10 +103,12 @@ export interface IRSummary {
 
 export interface ViolationLocation {
   page?: number | null;
+  page_end?: number | null;
   paragraph_index?: number | null;
   section?: string | null;
   section_index?: number | null;
   excerpt?: string | null;
+  highlight_excerpt?: string | null;
   [key: string]: unknown;
 }
 

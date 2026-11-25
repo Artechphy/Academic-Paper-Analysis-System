@@ -61,6 +61,64 @@ const SIZE_PRESETS = [
   { value: '10.5', label: '五号 (10.5pt)' },
 ];
 
+const FIELD_LABEL_NAMES: Record<string, string> = {
+  school_code: '学校编号',
+  library_classification: '图书分类号',
+  title_cn: '中文题目',
+  title_en: '英文题目',
+  author_name: '论文作者',
+  major: '学科专业',
+  supervisor: '指导教师',
+  student_id: '学号',
+  classification: '密级',
+  research_direction: '研究方向',
+  study_mode: '学习形式',
+  training_unit: '培养单位',
+  submission_date: '提交时间',
+  completion_date: '完成时间',
+  signature: '签名栏',
+  defense_date: '答辩时间',
+};
+
+function renderViolationDetails(violations: ViolationResponse[]) {
+  return (
+    <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+      {violations.map((v) => (
+        <div
+          key={v.id}
+          className={`rounded-md border px-2.5 py-2 text-[11px] ${
+            v.severity === 'error'
+              ? 'border-[#FECACA] bg-[#FEF2F2] text-[#991B1B]'
+              : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-1.5 font-semibold">
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`rounded px-1 py-0.5 text-[9px] font-bold uppercase ${
+                  v.severity === 'error'
+                    ? 'bg-[#FEE2E2] text-[#B91C1C]'
+                    : 'bg-[#FEF3C7] text-[#B45309]'
+                }`}
+              >
+                {v.severity === 'error' ? '错误' : '警告'}
+              </span>
+              <span>{v.rule_name}</span>
+            </div>
+            <span className="font-mono text-[10px] opacity-75">{v.rule_code}</span>
+          </div>
+          <div className="mt-1 text-[10.5px] leading-relaxed opacity-95">
+            期望：{v.expected} ｜ 实际：{v.actual}
+          </div>
+          {v.message && (
+            <div className="mt-0.5 text-[10.5px] opacity-85">建议：{v.message}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function visualClassForParagraph(p: ParagraphIR): string {
   const alignClass =
     p.alignment === 'center'
@@ -320,25 +378,123 @@ export function DocxReaderEditor({
                 lastResolvedBanner?.paragraphIndex === p.index &&
                 lastResolvedBanner.resolvedCount > 0;
 
+              const hasErrors = pViolations.some((v) => v.severity === 'error');
+              const hasWarnings = pViolations.length > 0 && !hasErrors;
+              const canEditThis = editable && !isSaving;
+              const canInspectViolations = !editable && pViolations.length > 0;
+              const canClickParagraph = (canEditThis && !isSelected) || canInspectViolations;
+              const showExpandedViolations =
+                pViolations.length > 0 && (isSelected || matchesRule);
+
               if (p.object_kind === 'table') {
                 return (
-                  <div
-                    key={p.index}
-                    data-pane={paneId}
-                    data-para-index={p.index}
-                    className="my-2 flex items-center gap-2 rounded-lg border border-dashed border-[#D8D5CE] bg-[#FAF9F7] px-3 py-1.5 text-[11px] text-[#71717A]"
-                  >
-                    <Table2 className="h-3.5 w-3.5 text-[#1E3A5F]" />
-                    <span>表格区域（下方缩进段落为表格单元格内容）</span>
+                  <div key={p.index}>
+                    {showPageBreak && (
+                      <div className="my-4 flex items-center gap-3 text-[10px] font-medium text-[#71717A]">
+                        <div className="h-px flex-1 bg-[#ECEAE5]" />
+                        <span className="tabular-nums">第 {p.page_no} 页</span>
+                        <div className="h-px flex-1 bg-[#ECEAE5]" />
+                      </div>
+                    )}
+                    <div
+                      data-pane={paneId}
+                      data-para-index={p.index}
+                      onClick={() => {
+                        if (pViolations.length > 0) {
+                          onSelectParagraph(isSelected ? null : p.index);
+                        }
+                      }}
+                      className={`my-2 rounded-lg border border-dashed px-3 py-1.5 text-[11px] text-[#71717A] ${
+                        hasErrors
+                          ? 'border-[#FECACA] bg-[#FEF2F2]/40'
+                          : hasWarnings
+                            ? 'border-[#FDE68A] bg-[#FFFBEB]/50'
+                            : 'border-[#D8D5CE] bg-[#FAF9F7]'
+                      } ${pViolations.length > 0 ? 'cursor-pointer' : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Table2 className="h-3.5 w-3.5 text-[#1E3A5F]" />
+                          <span>
+                            {editable
+                              ? '表格区域（下方缩进段落为表格单元格内容）'
+                              : '表格结构单元（下方缩进内容为表格单元格）'}
+                          </span>
+                        </div>
+                        {pViolations.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectParagraph(isSelected ? null : p.index);
+                            }}
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums ${
+                              hasErrors
+                                ? 'bg-[#FEF2F2] text-[#B91C1C]'
+                                : 'bg-[#FFFBEB] text-[#B45309]'
+                            }`}
+                          >
+                            {showExpandedViolations
+                              ? '收起问题'
+                              : `${pViolations.length} 处问题 · 查看`}
+                          </button>
+                        )}
+                      </div>
+                      {showExpandedViolations && renderViolationDetails(pViolations)}
+                    </div>
                   </div>
                 );
               }
 
-              const hasErrors = pViolations.some((v) => v.severity === 'error');
-              const hasWarnings = pViolations.length > 0 && !hasErrors;
-              const canEditThis = editable && !isSaving;
-              const showExpandedViolations =
-                pViolations.length > 0 && (isSelected || matchesRule);
+              if (p.unit_kind === 'scanned_page') {
+                const scanBorder = isSelected
+                  ? 'border-[#1E3A5F] bg-[#EFF4FA]/40'
+                  : hasErrors
+                    ? 'border-[#FECACA] bg-[#FEF2F2]/50'
+                    : pViolations.length > 0
+                      ? 'border-[#FDE68A] bg-[#FFFBEB]/60'
+                      : 'border-[#E2E0DA] bg-[#FAF9F7]';
+                return (
+                  <div key={p.index}>
+                    {showPageBreak && (
+                      <div className="my-4 flex items-center gap-3 text-[10px] font-medium text-[#71717A]">
+                        <div className="h-px flex-1 bg-[#ECEAE5]" />
+                        <span className="tabular-nums">第 {p.page_no} 页</span>
+                        <div className="h-px flex-1 bg-[#ECEAE5]" />
+                      </div>
+                    )}
+                    <div
+                      data-pane={paneId}
+                      data-para-index={p.index}
+                      onClick={() => onSelectParagraph(isSelected ? null : p.index)}
+                      className={`my-2 cursor-pointer rounded-lg border border-dashed px-3.5 py-2.5 text-xs text-[#52525B] ${scanBorder}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <FileImage className="h-4 w-4 text-[#B45309]" />
+                          <span className="font-medium text-[#18181B]">
+                            第 {p.page_no ?? '?'} 页 · 扫描图像页
+                          </span>
+                          <span className="text-[11px] text-[#71717A]">（建议人工核验）</span>
+                        </div>
+                        {pViolations.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectParagraph(isSelected ? null : p.index);
+                            }}
+                            className="rounded-full bg-[#FFFBEB] px-2 py-0.5 text-[10px] font-medium text-[#B45309]"
+                          >
+                            {showExpandedViolations ? '收起提示' : `${pViolations.length} 项提示 · 查看`}
+                          </button>
+                        )}
+                      </div>
+                      {showExpandedViolations && renderViolationDetails(pViolations)}
+                    </div>
+                  </div>
+                );
+              }
 
               const borderClass = isSelected
                 ? 'border border-[#1E3A5F] bg-[#EFF4FA]/30 ring-2 ring-[#1E3A5F]/10'
@@ -366,11 +522,15 @@ export function DocxReaderEditor({
                     data-pane={paneId}
                     data-para-index={p.index}
                     onClick={() => {
-                      if (canEditThis && !isSelected) onSelectParagraph(p.index);
+                      if (canEditThis && !isSelected) {
+                        onSelectParagraph(p.index);
+                      } else if (canInspectViolations) {
+                        onSelectParagraph(isSelected ? null : p.index);
+                      }
                     }}
                     className={`group relative rounded-r-lg px-3.5 py-2 transition-colors ${
                       p.in_table ? 'ml-4' : ''
-                    } ${borderClass} ${canEditThis && !isSelected ? 'cursor-pointer' : ''}`}
+                    } ${borderClass} ${canClickParagraph ? 'cursor-pointer' : ''}`}
                   >
                     {/* Hover-only or Selected Floating Micro-Badge */}
                     <div
@@ -382,6 +542,20 @@ export function DocxReaderEditor({
                     >
                       <div className="flex flex-wrap items-center gap-1.5 text-[#71717A] opacity-0 transition-opacity group-hover:opacity-100">
                         <span className="tabular-nums font-medium">#{p.index + 1}</span>
+                        {p.page_end && p.page_no && p.page_end !== p.page_no && (
+                          <>
+                            <span>·</span>
+                            <span className="tabular-nums text-[#1E3A5F]">
+                              第 {p.page_no}–{p.page_end} 页
+                            </span>
+                          </>
+                        )}
+                        {p.line_count != null && p.line_count > 1 && (
+                          <>
+                            <span>·</span>
+                            <span className="tabular-nums">{p.line_count} 行</span>
+                          </>
+                        )}
                         <span>·</span>
                         <span className="tabular-nums">
                           {getFontLabel(p.font_name)}
@@ -409,16 +583,23 @@ export function DocxReaderEditor({
                             已改动
                           </span>
                         )}
-                        {pViolations.length > 0 && !showExpandedViolations && (
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 font-medium tabular-nums ${
+                        {pViolations.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectParagraph(isSelected ? null : p.index);
+                            }}
+                            className={`rounded-full px-2 py-0.5 font-medium tabular-nums transition-colors ${
                               hasErrors
-                                ? 'bg-[#FEF2F2] text-[#B91C1C]'
-                                : 'bg-[#FFFBEB] text-[#B45309]'
+                                ? 'bg-[#FEF2F2] text-[#B91C1C] hover:bg-[#FEE2E2]'
+                                : 'bg-[#FFFBEB] text-[#B45309] hover:bg-[#FEF3C7]'
                             }`}
                           >
-                            {pViolations.length} 处问题
-                          </span>
+                            {showExpandedViolations
+                              ? '收起问题'
+                              : `${pViolations.length} 处问题 · 点击查看`}
+                          </button>
                         )}
                         {canEditThis && !isSelected && (
                           <span className="hidden items-center gap-0.5 font-medium text-[#1E3A5F] group-hover:inline-flex">
@@ -594,21 +775,56 @@ export function DocxReaderEditor({
                           </div>
                         </div>
                       </div>
+                    ) : p.unit_kind === 'underline_row' ? (
+                      <div className="flex flex-wrap items-center gap-2 text-[13px] leading-relaxed text-[#18181B]">
+                        <span className="rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] font-medium text-[#52525B]">
+                          {p.field_label ? FIELD_LABEL_NAMES[p.field_label] ?? p.field_label : '下划线栏'}
+                        </span>
+                        <span className="min-w-[140px] border-b border-[#52525B] px-1.5 pb-0.5 text-[#18181B]">
+                          {p.field_value?.trim() || p.text || ''}
+                        </span>
+                        {!p.field_value?.trim() && !p.has_signature_image && (
+                          <span className="rounded bg-[#FFFBEB] px-1.5 py-0.5 text-[10px] font-medium text-[#B45309]">
+                            待填写
+                          </span>
+                        )}
+                        {p.has_signature_image && (
+                          <span className="inline-flex items-center gap-1 rounded bg-[#ECFDF5] px-1.5 py-0.5 text-[10px] font-medium text-[#15803D]">
+                            <CheckCircle2 className="h-3 w-3" />
+                            已签字
+                          </span>
+                        )}
+                      </div>
                     ) : (
                       <div className={visualClassForParagraph(p)}>
-                        {p.has_image && (
+                        {(p.has_image || p.unit_kind === 'figure') && (
                           <span className="mr-1.5 inline-flex items-center gap-1 rounded bg-[#EFF4FA] px-1.5 py-0.5 text-[10px] font-medium text-[#1E3A5F]">
                             <FileImage className="h-3 w-3" />
                             插图
                           </span>
                         )}
-                        {p.object_kind === 'formula' && (
+                        {(p.object_kind === 'formula' || p.unit_kind === 'formula') && (
                           <span className="mr-1.5 inline-flex items-center rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] font-medium text-[#52525B]">
                             公式
                           </span>
                         )}
+                        {p.unit_kind === 'caption' && (
+                          <span className="mr-1.5 inline-flex items-center rounded bg-[#EFF4FA] px-1.5 py-0.5 text-[10px] font-medium text-[#1E3A5F]">
+                            题注
+                          </span>
+                        )}
+                        {p.unit_kind === 'footnote' && (
+                          <span className="mr-1.5 inline-flex items-center rounded bg-[#F3F2EE] px-1.5 py-0.5 text-[10px] font-medium text-[#71717A]">
+                            脚注
+                          </span>
+                        )}
                         <span className="whitespace-pre-wrap break-words">
-                          {p.text || (p.has_image ? '' : '（空段落）')}
+                          {p.text ||
+                            (p.has_image || p.unit_kind === 'figure'
+                              ? '（图像区域）'
+                              : p.unit_kind === 'formula'
+                                ? '（公式对象）'
+                                : '（空段落）')}
                         </span>
                       </div>
                     )}
@@ -641,28 +857,7 @@ export function DocxReaderEditor({
                     )}
 
                     {/* Expanded violation details only when selected or highlighted */}
-                    {showExpandedViolations && (
-                      <div className="mt-2 space-y-1.5">
-                        {pViolations.map((v) => (
-                          <div
-                            key={v.id}
-                            className={`rounded-md border px-2.5 py-1.5 text-[11px] ${
-                              v.severity === 'error'
-                                ? 'border-[#FECACA] bg-[#FEF2F2] text-[#991B1B]'
-                                : 'border-[#FDE68A] bg-[#FFFBEB] text-[#92400E]'
-                            }`}
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-1 font-semibold">
-                              <span>{v.rule_name}</span>
-                              <span className="font-mono text-[10px] opacity-75">{v.rule_code}</span>
-                            </div>
-                            <div className="mt-0.5 text-[10px] opacity-90">
-                              期望：{v.expected} ｜ 实际：{v.actual}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    {showExpandedViolations && renderViolationDetails(pViolations)}
                   </div>
                 </div>
               );

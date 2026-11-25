@@ -1,6 +1,19 @@
 import type { FileExt, Severity, Verdict, ViolationResponse } from './api';
 
 export type Alignment = 'left' | 'center' | 'right' | 'justify';
+export type UnitKind =
+  | 'paragraph'
+  | 'heading'
+  | 'caption'
+  | 'figure'
+  | 'table'
+  | 'formula'
+  | 'underline_row'
+  | 'footnote'
+  | 'reference'
+  | 'toc_entry'
+  | 'scanned_page'
+  | 'other';
 export type RuleScope = 'global' | 'cluster' | 'point';
 export type RuleStatus = 'open' | 'fixed' | 'ignored';
 export type DiffSource = 'manual' | 'rule' | 'llm';
@@ -20,6 +33,14 @@ export interface ParagraphIR {
   bbox: [number, number, number, number] | null;
   page_no: number | null;
   paragraph_start_index: number | null;
+  unit_kind?: UnitKind;
+  page_end?: number | null;
+  line_count?: number;
+  field_label?: string | null;
+  field_value?: string | null;
+  has_underline?: boolean;
+  has_signature_image?: boolean;
+  in_figure?: boolean;
   section_key: string | null;
   role: string;
   text: string;

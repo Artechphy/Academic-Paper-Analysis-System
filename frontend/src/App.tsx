@@ -281,10 +281,10 @@ export default function App() {
     }
   };
 
-  const handleRecheck = async (paperId: string, ruleSetId: string) => {
+  const handleRecheck = async (paperId: string, ruleSetId: string, reparse = false) => {
     setRecheckingPaperId(paperId);
     try {
-      const detail = await recheckPaper(paperId, ruleSetId);
+      const detail = await recheckPaper(paperId, ruleSetId, reparse);
       const summary = toSummary(detail);
       setRecheckOverrides((prev) => ({ ...prev, [paperId]: summary }));
       if (violationDrawerOpen && activeCheckRun?.paper_id === paperId) {
@@ -292,7 +292,12 @@ export default function App() {
       }
       void refreshStats();
       const targetName = ruleSets.find((r) => r.id === ruleSetId)?.name ?? '目标模板';
-      showToast('success', `已基于快照免重解析重检（${targetName}）`);
+      showToast(
+        'success',
+        reparse
+          ? `已重新解析原文件并完成检测（${targetName}）`
+          : `已基于快照免重解析重检（${targetName}）`,
+      );
     } catch (err) {
       showToast('error', err instanceof ApiError ? err.message : '重检失败');
     } finally {
