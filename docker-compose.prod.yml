@@ -1,0 +1,57 @@
+name: paper-analyzer
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-paper_analyzer}
+      POSTGRES_USER: ${POSTGRES_USER:-paper_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-paper_admin_change_me}
+    volumes:
+      - pg18_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-paper_admin} -d ${POSTGRES_DB:-paper_analyzer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  backend:
+    image: ${IMAGE_PREFIX:-ghcr.io/artechphy/academic-paper-analysis-system}/backend:${IMAGE_TAG:-latest}
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-paper_admin}:${POSTGRES_PASSWORD:-paper_admin_change_me}@postgres:5432/${POSTGRES_DB:-paper_analyzer}
+      STORAGE_DIR: /app/storage
+      REVISIONS_DIR: /app/storage/revisions
+      XELATEX_BIN: /usr/bin/xelatex
+      SOFFICE_BIN: /usr/bin/soffice
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost"]}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-25.0}
+    volumes:
+      - paper_storage:/app/storage
+
+  web:
+    image: ${IMAGE_PREFIX:-ghcr.io/artechphy/academic-paper-analysis-system}/web:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+
+volumes:
+  pg18_data:
+  paper_storage:

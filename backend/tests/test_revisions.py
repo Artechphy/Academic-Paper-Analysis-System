@@ -16,7 +16,7 @@ import pymupdf
 import pytest
 from sqlalchemy import func, select
 
-from app.config import settings
+from app.config import Settings, settings
 from app.db.models import CheckRun, Paper, RevisionFeedback, RevisionSession
 from app.db.seed import FJNU_MASTER_RULES, FJNU_RULES_BY_CODE
 from app.engine.evaluator import Violation, evaluate
@@ -325,6 +325,38 @@ def test_advisor_mock_json_and_safe_fallback(tmp_path, monkeypatch):
     assert not fallback.llm_used and fallback.output.text_replacements[0].new_text == "关键词：版面；格式；文档"
     monkeypatch.setattr(settings, "llm_api_key", None)
     assert llm_advisor.advise(ir, book, PARAMS, selected) == fallback
+
+
+@pytest.mark.parametrize("on_path", [True, False], ids=["path-discovery", "homebrew-fallback"])
+def test_rendering_executable_defaults(monkeypatch, on_path):
+    monkeypatch.delenv("XELATEX_BIN", raising=False)
+    monkeypatch.delenv("SOFFICE_BIN", raising=False)
+    monkeypatch.setattr("app.config.shutil.which", lambda binary: f"/usr/bin/{binary}" if on_path else None)
+
+    config = Settings(_env_file=None)
+    directory = "/usr/bin" if on_path else "/opt/homebrew/bin"
+    assert (config.xelatex_bin, config.soffice_bin) == (f"{directory}/xelatex", f"{directory}/soffice")
+
+
+def test_rendering_executable_environment_overrides_path_discovery(monkeypatch):
+    monkeypatch.setenv("XELATEX_BIN", "/custom/bin/xelatex")
+    monkeypatch.setenv("SOFFICE_BIN", "/custom/bin/soffice")
+    monkeypatch.setattr("app.config.shutil.which", lambda binary: f"/usr/bin/{binary}")
+
+    config = Settings(_env_file=None)
+    assert (config.xelatex_bin, config.soffice_bin) == ("/custom/bin/xelatex", "/custom/bin/soffice")
+
+
+def test_latex_uses_ordered_cjk_font_fallbacks():
+    with pymupdf.open() as pdf:
+        pdf.new_page()
+        tex, _ = latex_annotator._tex(pdf, [], [], "论文.pdf", "issues_only")
+
+    assert (
+        r"\IfFontExistsTF{Songti SC}{\setCJKmainfont{Songti SC}}{"
+        r"\IfFontExistsTF{Noto Serif CJK SC}{\setCJKmainfont{Noto Serif CJK SC}}{"
+        r"\IfFontExistsTF{FandolSong}{\setCJKmainfont{FandolSong}}{\setCJKmainfont{STSong}}}}"
+    ) in tex
 
 
 def test_real_latex_has_source_and_balloon_at_separate_coordinates(tmp_path):

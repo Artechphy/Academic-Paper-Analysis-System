@@ -214,7 +214,9 @@ def _tex(pdf, rulebook, annotations, file_name, page_mode):
         r"\usepackage[paperwidth=297mm,paperheight=297mm,margin=18mm]{geometry}",
         r"\usepackage{fontspec,xeCJK,pdfpages,tikz}",
         r"\usetikzlibrary{arrows.meta}",
-        r"\IfFontExistsTF{Songti SC}{\setCJKmainfont{Songti SC}}{\setCJKmainfont{STSong}}",
+        r"\IfFontExistsTF{Songti SC}{\setCJKmainfont{Songti SC}}{"
+        r"\IfFontExistsTF{Noto Serif CJK SC}{\setCJKmainfont{Noto Serif CJK SC}}{"
+        r"\IfFontExistsTF{FandolSong}{\setCJKmainfont{FandolSong}}{\setCJKmainfont{STSong}}}}",
         r"\pagestyle{empty}\parindent=0pt",
         r"\begin{document}",
         r"{\Huge 论文修订批注}\par\vspace{8mm}",

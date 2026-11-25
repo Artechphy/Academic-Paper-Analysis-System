@@ -1,0 +1,195 @@
+name: Build and Deploy to Ubuntu
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "可选：指定已有镜像标签用于回滚或重放（如 sha-abc1234）；留空则从当前提交构建"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  test-and-push:
+    name: Test & Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_prefix: ${{ steps.meta.outputs.image_prefix }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: paper_analyzer
+          POSTGRES_USER: paper_admin
+          POSTGRES_PASSWORD: paper_admin_dev
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd="pg_isready -U paper_admin -d paper_analyzer"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          IMAGE_PREFIX="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_prefix=${IMAGE_PREFIX}" >> "$GITHUB_OUTPUT"
+          INPUT_TAG="${{ inputs.image_tag }}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_TAG}" ]]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+            echo "image_tag=sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - name: Setup Node.js
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Verify frontend build
+        if: steps.meta.outputs.build_needed == 'true'
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend build
+
+      - name: Setup Docker Buildx
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend test image
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: test
+          load: true
+          tags: paper-analyzer-backend:test
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Run backend tests against PostgreSQL 18
+        if: steps.meta.outputs.build_needed == 'true'
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL=postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:5432/paper_analyzer \
+            -e TEST_DATABASE_URL=postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:5432/paper_analyzer \
+            paper-analyzer-backend:test \
+            sh -c "alembic upgrade head && python -m app.db.seed && pytest tests -q"
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend runtime image
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: runtime
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_prefix }}/backend:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_prefix }}/backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend nginx image
+        if: steps.meta.outputs.build_needed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_prefix }}/web:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_prefix }}/web:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy-ubuntu:
+    name: Deploy to Ubuntu Server
+    needs: test-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deployment secrets
+        id: check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [[ -z "${DEPLOY_HOST}" || -z "${DEPLOY_USER}" || -z "${DEPLOY_SSH_KEY}" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "尚未配置服务器 Secrets（DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY），已跳过远程部署，镜像已推送至 GHCR。" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.check.outputs.ready == 'true'
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        if: steps.check.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GHCR_USER: ${{ secrets.GHCR_USER || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          IMAGE_PREFIX: ${{ needs.test-and-push.outputs.image_prefix }}
+          IMAGE_TAG: ${{ needs.test-and-push.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${PORT}" -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          ssh -i ~/.ssh/deploy_key -p "${PORT}" -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p /opt/paper-analyzer"
+
+          scp -i ~/.ssh/deploy_key -P "${PORT}" -o StrictHostKeyChecking=accept-new \
+            docker-compose.prod.yml deploy/deploy.sh deploy/.env.prod.example \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/paper-analyzer/"
+
+          printf '%s\n' "${GHCR_TOKEN:-}" | ssh -i ~/.ssh/deploy_key -p "${PORT}" -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "IFS= read -r GHCR_TOKEN; export GHCR_TOKEN; chmod +x /opt/paper-analyzer/deploy.sh && IMAGE_PREFIX='${IMAGE_PREFIX}' IMAGE_TAG='${IMAGE_TAG}' GHCR_USERNAME='${GHCR_USER:-}' /opt/paper-analyzer/deploy.sh"
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm --dir frontend build
+
+  backend:
+    name: Backend Container Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: paper_analyzer
+          POSTGRES_USER: paper_admin
+          POSTGRES_PASSWORD: paper_admin_dev
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd="pg_isready -U paper_admin -d paper_analyzer"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend test image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          target: test
+          load: true
+          tags: paper-analyzer-backend:test
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Run Alembic migration, seed, and pytest inside Linux container
+        run: |
+          docker run --rm --network host \
+            -e DATABASE_URL=postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:5432/paper_analyzer \
+            -e TEST_DATABASE_URL=postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:5432/paper_analyzer \
+            paper-analyzer-backend:test \
+            sh -c "alembic upgrade head && python -m app.db.seed && pytest tests -q"

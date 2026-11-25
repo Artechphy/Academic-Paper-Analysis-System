@@ -1,5 +1,7 @@
 from pathlib import Path
+import shutil
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,8 +20,8 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = "deepseek-chat"
     llm_timeout_s: float = 25.0
-    xelatex_bin: str = "/opt/homebrew/bin/xelatex"
-    soffice_bin: str = "/opt/homebrew/bin/soffice"
+    xelatex_bin: str = Field(default_factory=lambda: shutil.which("xelatex") or "/opt/homebrew/bin/xelatex")
+    soffice_bin: str = Field(default_factory=lambda: shutil.which("soffice") or "/opt/homebrew/bin/soffice")
     revisions_dir: Path = Path(__file__).resolve().parents[1] / "storage" / "revisions"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
