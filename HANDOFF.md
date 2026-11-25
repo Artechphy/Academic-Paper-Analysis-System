@@ -1,6 +1,6 @@
 # 论文分析系统（v1 MVP）交接文档（HANDOFF）
 
-> 更新时间：2026-11-23  
+> 更新时间：2026-11-24  
 > 工作区路径：`/Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统`  
 > 当前分支：`main`
 
@@ -8,48 +8,90 @@
 
 ## 1. 目标与已对齐边界
 
-### 1.1 v1 MVP 核心目标
-- **核心功能**：批量上传论文（同时支持 `.docx` 与 `.pdf`），准确识别哪些论文格式有问题（`FAIL`）、哪些格式没问题（`PASS`）、哪些文件损坏无法解析（`ERROR`），并给出可定位的中文违规明细（规则名、类别、严重级别、页码/段落/摘录、期望值 vs 实际值）。
-- **内置标准规范**：严格对齐用户提供的 **《福建师范大学研究生学位论文基本要求与书写格式（修订）》（师大研〔2019〕7号）**，数据库预置 3 套模板：
+### 1.1 核心目标与当前口径
+- **核心功能**：批量上传论文（同时支持 `.docx` 与 `.pdf`），识别论文格式合规状态（`PASS` / `FAIL` / `ERROR`），并给出按页面顺序排列、原文与规则严格可对照的中文违规明细与在线修订工作台。
+- **内置标准规范**：对齐 **《福建师范大学研究生学位论文基本要求与书写格式（修订）》（师大研〔2019〕7号）**，数据库预置 3 套模板：
   1. `fjnu_master_2019`（默认，福建师范大学硕士学位论文规范，21 条规则）
   2. `fjnu_doctor_2019`（福建师范大学博士学位论文规范，21 条规则）
   3. `general_academic_v1`（通用中文学术论文基础规范，6 条规则）
-- **判定严格度（用户已明确）**：福师大模板全部 21 条规则默认 `severity = "error"`（包含文件名 `学号_姓名`、总字数 3万/5万、答辩签名表）；同时数据库与 API 支持实时开关单条规则、切换 `error`/`warning`、调参、克隆模板，并支持基于 `papers.parsed_ir` JSONB 快照免重解析重检。
-- **技术栈与环境约束（用户已明确）**：
+- **已确认产品口径（2026-11-24 对齐）**：
+  - 同一规则在同一段落命中的多项子问题**合并为同一条综合违规**（不重复拆分）；跨规则同段问题在页面视图下聚合在同一原文卡片内展示。
+  - **暂不处理全英文论文正文**（`肖晓晶.pdf`、`方宏杰.pdf` 保留现状），仅对中文论文中的纯西文/代码/参考文献行放行 `Times New Roman` 及常见等宽字体。
+  - 支持对历史已上传论文执行 **「重新解析并检测」**（`reparse=true`），刷新旧 `papers.parsed_ir` 快照，同时保持已有修订会话的历史原稿快照不被破坏。
+- **技术栈与环境约束**：
   - 数据库：**Docker Compose 启动 PostgreSQL 18**（映射端口 `55432:5432`，避免冲突本地 Homebrew PG 18 的 `5432`）
   - 后端：Python 3.13（`uv` 管理的 `backend/.venv`）+ FastAPI + SQLAlchemy 2.0 + Alembic + psycopg3 + `python-docx` + `lxml` + `PyMuPDF`
   - 前端：React 19 + TypeScript + Vite + Tailwind CSS v4 + `lucide-react`（**pnpm**）
-- **分工约束（用户已明确）**：
-  - 后端/解析器/规则引擎/API：由 **Codex CLI (`OpenAI Codex v0.171.0`, `gpt-6.2-sol`, `reasoning effort: high`)** 协作实现（M1–M3 及真实知网 PDF 调优已完成）
-  - **Milestone 4 前端开发**：由 Antigravity 直接实现（已完成并构建通过）
-  - **网络与记忆偏好（已完成同步）**：本地 `65533` 代理端口已停用、后续网络访问优先直连，已同步至 `~/.gemini/config/plugins/personal-memory/rules/AGENTS.md` 与 `references/profile-snapshot-2026-11-20.md`。
+- **协作分工与防 Goodhart 验收约束**：
+  - 后端/解析器/规则引擎/API 由本机 Codex CLI 持久化双会话执行（`impl`：`01a20753-44f3-7782-8848-f71415b18a01`，`audit`：`01a20be9-7f5d-7f90-a7cb-3d2ebb70e044`）；前端与编排验收由 Antigravity 直接完成。
+  - 验收目标不以“合成单测全绿”为终点，而是同时卡 **Dev Golden 真实页面真值集 + 5 项全链路不变量 + 视觉 Overlay 原稿核验 + Holdout 盲测随机抽检**。
 
 ---
 
 ## 2. 已完成进展与验证证据
 
-### Git 提交与里程碑历史
+### Git 里程碑历史
 | 里程碑 | 内容与验证状态 |
 | :--- | :--- |
 | 规格沉淀 (`0c37bd1`) | 初始化仓库、`.gitignore` 与完整技术规格书 [SPEC.md](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/SPEC.md) |
-| **M1 基础设施与数据层** (`541a6f1`) | `docker-compose.yml`（`name: paper-analyzer`，PG 18 卷挂载 `/var/lib/postgresql`）、`backend/pyproject.toml`、`backend/uv.lock`、6 张核心表、Alembic `0001_initial.py`（含触发器 `trg_sync_check_batch_counts` 与分析视图 `v_rule_violation_stats` / `v_batch_summary`）、幂等种子脚本 `seed.py`、FastAPI `/api/v1/health`。 |
-| **M2 解析器与规则引擎** (`487a563`) | 统一 `DocumentIR`、`.docx`（OOXML）与 `.pdf`（PyMuPDF）双解析器、21 条福师大规则与通用规则引擎、样本生成器。原 61 项 pytest 通过。 |
-| **M3 业务服务与完整 REST API** (`92e52e0`) | 完整实现 SPEC 第 7 节全部 11 个 REST 接口、SHA-256 去重存储、事务回滚保护、免重解析重检、SQLite 等价触发器/视图集成测试。原 69 项 pytest 通过。 |
-| **M4 React 前端 + 知网 PDF 解析调优 + PG 18 全栈验收** (`ed89c8e`) | 1. **`.gitignore` 与前端依赖**：忽略 `.pnpm-store/`、`input/` 与 `*.tsbuildinfo`；`frontend/pnpm-workspace.yaml` 启用 `esbuild: true` 并完成 `pnpm install --dir frontend`。<br>2. **前端工作台（`frontend/src/`）**：实现完整学术编校工作台（`TopBar`、`UploadZone`、`KpiBar`、`ResultsTable`、`ViolationDrawer` 规则分组聚合与手动复核清单、`RuleConfigDrawer` 实时调参与模板克隆、`StatsView` TOP 10 统计与历史批次汇总）。`pnpm --dir frontend build`（`tsc -b && vite build`）**0 错误通过**。<br>3. **5 篇真实知网硕士论文 PDF 调优（Codex CLI）**：修复 PDF 基线行距容差、嵌入式/乱码宋体映射与混排英文处理、代表性正文页边距采样、装饰性矢量图过滤、跨行参考文献合并、页眉/目录误切换模块及 `cnki_abstract` 识别；新增 [test_pdf_regressions.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/tests/test_pdf_regressions.py) 17 项回归测试。<br>4. **PostgreSQL 18 真库与端到端全栈验收**：`docker compose up -d --wait` 启动 `paper_analyzer_pg18`（健康运行于 `127.0.0.1:55432`），`alembic upgrade head` 与两次 `python -m app.db.seed` 幂等通过；PG 18 全量测试 86 项全通过，浏览器端到端全流程验收通过。 |
-| **Phase 5 论文修订对照工作台**（已完成） | 1. **技术设计**：编写 [PHASE5_SPEC.md](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/PHASE5_SPEC.md)，约定可查规则书、DOCX 在线编校、单段增量重判、Agent 修复与左右双重对照、LaTeX 气泡批注 PDF 导出及 7 个 `/api/v1` 接口。<br>2. **后端实现（Codex CLI 复用会话 `01a20753-44f3-7782-8848-f71415b18a01`）**：增加 `bbox` 透传、Alembic `0002_revision_sessions.py`（`revision_sessions` 与 `revision_feedbacks` 表）、`backend/app/revisions/`（`consolidator.py`、`incremental.py`、`docx_fixer.py`、`llm_advisor.py`、`latex_annotator.py`）与 [test_revisions.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/tests/test_revisions.py)（29 项，含真 LibreOffice 与 XeLaTeX 编译）。**PG 18 下 115 项 pytest 全通过**。<br>3. **前端工作台（Antigravity 实现）**：完成 [RulebookPanel.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/RulebookPanel.tsx)、[DocxReaderEditor.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/DocxReaderEditor.tsx)（含每屏 80 段分窗渲染与跨屏跳转，流畅支持 5,058 段知网 PDF）、[RevisionWorkspace.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/RevisionWorkspace.tsx) 并接入结果表与详情抽屉。`pnpm --dir frontend build` 0 错误通过。<br>4. **PG 18 + 浏览器端到端验收**：验证 `bad_sample.docx` 单段修改增量重判（`2→4→2`）、一键修复与左右双重对照（`2→1`）、对照态继续编辑与用户意见迭代、修订 `.docx` 与 3 页气泡 PDF 下载；验证 101 页知网 PDF（`上官慧华.pdf`）规则书检索跳段（`第 265 段`）与 17 页 LaTeX 气泡批注 PDF 编译下载，零控制台与接口错误。 |
+| **M1–M3 后端底座与 REST API** (`541a6f1`–`92e52e0`) | PG 18 容器、6 张核心表、Alembic 迁移与触发器/视图、幂等种子、`.docx`/`.pdf` 双解析器、21 条福师大规则与 11 个基础 REST 接口。 |
+| **M4 前端工作台 + 知网调优** (`2bc6edf`–`ed89c8e`) | React 工作台、5 篇真实知网 PDF 首轮调优、PG 18 全栈端到端验收。 |
+| **Phase 5 论文修订对照工作台** (`0e6b7cb`–`205da40`) | [PHASE5_SPEC.md](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/PHASE5_SPEC.md)、规则书、DOCX 在线编校与增量重判、Agent 一键修复与左右对照、XeLaTeX 气泡批注 PDF 导出及工作台 UI 重构。 |
+| **Phase 6 PDF 基本单位重构与严重级别分级** | 扩展 [ir.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/schemas/ir.py)（逻辑自然段、下划线行、扫描页、图内文字、续表、子图与题注格式问题），新增迁移 [0003_spacing_rule_severity.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/alembic/versions/0003_spacing_rule_severity.py) 将行距/边距/核验类降级为 `warning`。 |
+| **Phase 7 违规明细全链路修复、图表/三线表/LaTeX 兼容与双盲验收**（本轮完成） | 1. **P0 排序、综合违规、原文对照与重解析**：[check_service.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/services/check_service.py) 废除随机 `uuid4` 排序改按 `(page, paragraph_index, severity, rule_code, id)` 稳定排序并支持 `reparse=True`；[evaluator.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/engine/evaluator.py) 新增 `merge_paragraph_violations` 合并同规则同段子问题；[rules_catalog.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/engine/rules_catalog.py) 清除页码/字数/摘要借用正文作 `excerpt`、补齐缺题注对象描述与 `BODY_TYPOGRAPHY` `highlight_excerpt`、修复 DOCX 无缓存 `PAGE` 域误报与中文论文纯西文/代码行字体口径。<br>2. **前端违规明细升级**：[ViolationDrawer.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/ViolationDrawer.tsx) 默认提供「按页面顺序」视图（同段多规则聚合 + `异常片段` 高亮），支持切回「按规则分组」，顶部新增「重新解析并检测」按钮。<br>3. **P1/P2 图表、三线表与 LaTeX 通用解析**：[pdf_parser.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/parsers/pdf_parser.py)、[base.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/parsers/base.py)、[utils.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/engine/utils.py) 重构三线表行容差聚类/宽列/双语表题/下置表题回溯；完善表格 vs 矢量图仲裁（保护宽幅问卷网格表、不误吞立体几何/架构图）；支持垂直切片图合并、矢量流程图多簇合并与侧边短标注吸收、跨页连体大图与跨页图题、1 行续表、同行并排左→右排序、3–4 行五号题注与多行章标题合并、正文提及过滤；全面兼容 LaTeX（`TeXGyreTermesX`、数学字体、算法伪代码三线框、参考文献悬挂 `[1]` 标签、18 pt 封面中文题目、双面打印纯白留白页）。<br>4. **全量验证**：PostgreSQL 18 全量 pytest **200 passed, 0 failed**（含真 LibreOffice / XeLaTeX 转换）；`pnpm --dir frontend build` **0 错误通过**；Dev 4 篇 + Holdout 3 篇全链路 5 项不变量全部为 **0**，Dev Golden 从 **19/44 提升至 43/44**。 |
 
-### 5 篇真实知网 PDF（`input/pdf/`）调优前后对比（`FJNU_MASTER_RULES`）
-| 样本论文 | 页数 | 调优前违规数 → 调优后违规数 | 说明 |
-| :--- | ---: | ---: | :--- |
-| `基于“互联网+”的高中生数学自主学习策略研究_上官慧华.pdf` | 101 | 7,191 → 439 | 恢复答辩签名表与科研成果模块，真实文件名/缺声明/关键词超长/正文字数仍精准检出 |
-| `多模态话语分析视角下高中英语深度阅读教学模式的建构研究_肖晓晶.pdf` | 128 | 3,576 → 779 | 识别英文专著/章结构与 `cnki_abstract` |
-| `快速光声成像系统的优化设计及若干应用_王飞扬.pdf` | 90 | 1,866 → 372 | 中文摘要字数恢复准确提取（805 字），消除大量伪图题与换行参考文献误报 |
-| `福州市中考英语口语人机对话考试现状调查研究_方宏杰.pdf` | 111 | 5,065 → 769 | 识别英文正文章节结构与 `cnki_abstract`，真实顺序/关键词缺陷保留 |
-| `高师音乐教育专业“艺术实践+思政”育人模式探究_卢诗谕.pdf` | 127 | 4,371 → 354 | 识别结论与附录模块，正文字数（52,022 字）与绪论超长仍准确判定 |
+### 中文论文 7 篇实测结果（Dev 4 篇 + Holdout 3 篇盲测，`FJNU_MASTER_RULES`）
+
+> 样本存放于 `.gitignore` 忽略的 `input/caj/` 与 `input/pdf/`；新增的 4 篇 `.caj` 均已无损转为 `repaired=False` 的标准 PDF（含入选优秀论文名单的 LaTeX 参考基准 `吴立钊.pdf`）。
+
+| 分组 | 样本论文 | 页数 | Error / Warning（修复前 → 后） | 已绑定图/表（修复后） | 5 项不变量违例 | 视觉核验说明 |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| Dev | `上官慧华.pdf`（数学教育/Word） | 101 | 270/13 → 180/9 | 57 / 10 | **0** | p.38 垂直切片与跨页连体图、p.46 正方体矢量图与 `图4-10/4-11` 顺序、p.81 章标题页眉通过 |
+| Dev | `王飞扬.pdf`（光学工程/Word） | 90 | 251/6 → 43/6 | 54 / 14 | **0** | p.73 标准三线表 `表5-3`、p.41 3–4 行双语图题、p.17 公式编号全部通过 |
+| Dev | `卢诗谕.pdf`（音乐教育/Word） | 127 | 294/23 → 240/23 | 39 / 6 | **0** | p.64 1 行跨页续表识别为续表；真外括号题注、偶数页页眉、分类文献召回 100% |
+| Dev（优论基准） | `吴立钊.pdf`（计算机/LaTeX） | 100 | 2,180/83 → 375/80 | 21 / 12 | **0** | 封面题目、英文摘要字体、LaTeX 公式/算法框/参考文献悬挂标签、纯白留白页全修通 |
+| Holdout（盲测） | `刘紫玲.pdf`（海洋可视化/Word） | 88 | 193/11 → 36/11 | 56 / 16 | **0** | 首轮未见即绑定 56/57 图 + 16/16 表；中文论文纯代码行放行后误报清零 |
+| Holdout（盲测） | `陈诚.pdf`（公共管理/Word） | 73 | 203/10 → 179/10 | 4 / 3 | **0** | p.33 下置表题 `表3-1` 准确检出 `table_below` |
+| Holdout（盲测） | `谢琳璇.pdf`（体育心理/Word） | 130 | 389/13 → 98/13 | 13 / 57 | **0** | 首轮即框出 57 张 SPSS 多级表头三线表；收口问卷网格表后 Error 降 74.8% |
 
 ---
 
-## 3. 后端 API 精确契约速查（前端已全部对接）
+## 3. 下一阶段优先待解决问题（本轮暂不处理）
+
+### P0-1：内嵌原生 PDF 阅读器（替换当前 PDF 的 HTML 段落模拟渲染）
+- **现状与问题**：
+  - 当前修订工作台 [RevisionWorkspace.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/RevisionWorkspace.tsx) 对 `.pdf` 论文依旧复用 [DocxReaderEditor.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/DocxReaderEditor.tsx) 的结构化 HTML 段落流渲染逻辑。
+  - 在 HTML 模拟渲染下，PDF 中的所有插图仅显示 `插图 （图像区域）` 占位文案，表格仅显示 `表格结构单元` 占位条与散落单元格文本，**用户完全无法在页面上看到真实的图片、图表与原版排版**，也无法直观核对规则违规是否对应原稿位置。
+- **下一阶段目标方案**：
+  1. **后端原件流接口**：新增只读 PDF 原件接口（如 `GET /api/v1/papers/{paper_id}/source` 或 `GET /api/v1/revisions/{session_id}/source-pdf`，支持 `Range` 请求与 `application/pdf` 响应头），直接返回 `paper.storage_path` 中的原始 PDF。
+  2. **前端内嵌 PDF 阅读器组件**（如新建 `frontend/src/components/PdfNativeViewer.tsx`，基于 `pdfjs-dist`）：
+     - 按页虚拟化/懒加载渲染原生 PDF Canvas（含缩放、页码跳转、缩略/连续滚动）；
+     - 在每页 Canvas 上叠放透明 SVG/HTML **坐标高亮层（Overlay）**，直接读取 `ViolationLocation.bbox`（PDF 点坐标 `pt` 映射到当前缩放视口）绘制可点击高亮框；
+     - 与右侧 [RulebookPanel.tsx](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/frontend/src/components/RulebookPanel.tsx) 双向联动：点击规则锚点（`P.N` / `第 M 段`）自动滚动到原生 PDF 对应页并闪烁高亮对应 `bbox`；点击高亮框弹出对应违规明细与改写建议。
+     - `.docx` 保持现有可编辑 HTML 画布（或支持切换预览 LibreOffice 转换后的 PDF）。
+
+### P0-2：图表渲染异常与 ECharts 图片无法识别
+- **现状与用户验收反馈**：
+  1. **前端图表渲染问题**：阅读器与详情页中对图表（含 PDF 插图/矢量图与 DOCX 嵌入式图片/Excel Chart）均缺少真实图像预览，导致用户看到图表区域无法可视化核验。
+  2. **ECharts 导出图片无法识别**：在真实验收中，使用 ECharts 生成并插入论文的可视化图表图片（如 `input/pdf/基于ECharts的海洋数据可视化平台设计_刘紫玲.pdf` 及同类 ECharts 截图/矢量导出图）存在无法识别或图表边界/渲染异常的情况。
+- **下一阶段排查与修复切入点**：
+  1. 结合 P0-1 的原生 PDF 阅读器 + 视觉 Overlay，逐页核查 `刘紫玲.pdf`（及同类含 ECharts 图表论文）的 PDF 底层对象结构（`page.get_images(full=True)`、`page.get_image_info(xrefs=True)`、`Form XObject` 嵌套图像、透明蒙版 `SMask`、`page.get_drawings()` 矢量柱/折线/饼图、图内 ECharts 坐标轴与图例文本、以及被误判为装饰图或被 `image_boxes` 尺寸/覆盖率过滤掉的 ECharts 图片）。
+  2. 排查 `pdf_parser.py` 中 `_objects()`、`_body_graphics()`、`_is_drawing_container()`、`_combine_subfigures()` 对 ECharts 多图层/带白底/带渐变背景/SVG 转 PDF 矢量图的过滤与聚合边界，补齐 ECharts 图表专项 Golden 页面标注与回归测试。
+  3. 同步解决 DOCX 嵌入式图片/Chart 的前端真实缩略图渲染与 PDF 详情卡片中的图表裁切预览（如后端按 `page` + `bbox` 提供按需裁切图或由前端原生 PDF 渲染层直接呈现）。
+
+### P1：盲测复核记录的 3 处残余解析小边角
+1. `谢琳璇.pdf` p.32 正文以「`表现、领导力和团队参与...`」起段，因 `^表` 后紧跟汉字被宽松兜底题注正则误命中（需收紧 [base.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/parsers/base.py) 中文无数字题注匹配）。
+2. `陈诚.pdf` p.33 表题下置的三线表最底行因紧贴表题被漏包 1 行（[pdf_parser.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/parsers/pdf_parser.py) 向上回溯三线表底线容差微调）。
+3. `吴立钊.pdf` p.10 流程图左上角最顶行 `模型聚合阶段：` 仍留有 1 条 9 pt 正文排版提示（紧贴图顶短标签的连通块扩展）。
+
+### P2：中长期既有待办
+1. **多 LLM 模型效果对比（DeepSeek vs OpenAI vs Gemini）**：在真实学位论文上对比关键词精简、摘要去引用、参考文献补全及自然语言指令遵循的准确率与耗时。
+2. **外语专业全英文学位论文模板**：为外语专业硕博论文增补英文排版与字数规则模板（解耦中文正文宋体要求）。
+3. **工程文档补齐**：按需补充根目录 `README.md` 与 `TEST-PLAN.md`。
+
+---
+
+## 4. 后端 API 精确契约速查
 
 Schema 源文件：[rules.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/schemas/rules.py)、[checks.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/schemas/checks.py)、[revisions.py](file:///Users/artechphy/Documents/作业/大三上/高级数据库开发/论文分析系统/backend/app/schemas/revisions.py)
 
@@ -61,8 +103,8 @@ Schema 源文件：[rules.py](file:///Users/artechphy/Documents/作业/大三上
 - `POST /api/v1/batches/check`（`multipart/form-data`）：`files`, `rule_set_id`, `batch_name?` → `201 BatchDetail`
 - `GET /api/v1/batches` → `BatchSummary[]`
 - `GET /api/v1/batches/{batch_id}?verdict=pass|fail|error&q=...` → `BatchDetail`
-- `GET /api/v1/check-runs/{run_id}` → `CheckRunDetail`
-- `POST /api/v1/papers/{paper_id}/recheck` → `{ rule_set_id: UUID }` → `201 CheckRunDetail`
+- `GET /api/v1/check-runs/{run_id}` → `CheckRunDetail`（`violations` 按页码→段序稳定排序，同规则同段已合并，`location` 含 `page_end?`、`highlight_excerpt?`、`bbox?`）
+- `POST /api/v1/papers/{paper_id}/recheck` → `{ rule_set_id: UUID, reparse?: boolean }` → `201 CheckRunDetail`
 - `GET /api/v1/stats/overview` → `StatsOverview`
 - `POST /api/v1/check-runs/{run_id}/revisions` → `201 RevisionSessionDetail`
 - `GET /api/v1/revisions/{session_id}` → `RevisionSessionDetail`
@@ -74,38 +116,19 @@ Schema 源文件：[rules.py](file:///Users/artechphy/Documents/作业/大三上
 
 ---
 
-## 4. 运行环境状态与日常启动指南
+## 5. 运行环境与日常启动命令
 
 1. **Docker PostgreSQL 18 容器**：
-   - `paper_analyzer_pg18`（`postgres:18-alpine`，端口 `55432:5432`）已拉取并初始化完成，Alembic 迁移（至 `0002_revision_sessions`）与 3 套规则模板种子均已落库，真库全量测试（115 项）通过。
-   - 若后续重启宿主机，可执行以下命令拉起数据库或重跑真库测试：
-     ```bash
-     docker compose up -d --wait
-     cd backend && .venv/bin/alembic upgrade head && .venv/bin/python -m app.db.seed
-     TEST_DATABASE_URL="postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer" backend/.venv/bin/pytest -q
-     ```
-2. **DeepSeek LLM 默认配置（`backend/.env`）**：
-   - 系统默认对接 OpenAI 兼容接口并指向 DeepSeek，可在 `backend/.env` 中配置：
-     ```env
-     LLM_BASE_URL=https://api.deepseek.com/v1
-     LLM_MODEL=deepseek-chat
-     LLM_API_KEY=<your-deepseek-api-key>
-     ```
-   - 未配置 `LLM_API_KEY` 或调用超时时，自动平滑降级为确定性 OOXML 样式修复与规则文案，不影响本地演示与基础一键修复。
-   - 本机导出依赖路径默认 `/opt/homebrew/bin/xelatex`（`XELATEX_BIN`）与 `/opt/homebrew/bin/soffice`（`SOFFICE_BIN`）。
-3. **本地前后端开发启动命令**：
    ```bash
-   # 终端 1（后端 FastAPI）
-   cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-   # 终端 2（前端 Vite）
+   docker compose up -d --wait
+   cd backend && .venv/bin/alembic upgrade head && .venv/bin/python -m app.db.seed
+   TEST_DATABASE_URL="postgresql+psycopg://paper_admin:paper_admin_dev@127.0.0.1:55432/paper_analyzer" backend/.venv/bin/pytest -q
+   ```
+2. **本地前后端启动命令**：
+   ```bash
+   # 后端 FastAPI（http://127.0.0.1:8000）
+   backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+   # 前端 Vite（http://127.0.0.1:5173）
    pnpm --dir frontend dev --host 127.0.0.1 --port 5173
    ```
-   访问 `http://127.0.0.1:5173`，顶部状态显示 `PG18 已连接` 即可正常使用。
-
----
-
-## 5. 后续优化点（已对齐待办）
-
-1. **多 LLM 模型效果对比（DeepSeek vs OpenAI vs Gemini）**：在真实学位论文样本上横向对比三者在中文关键词精简（≤ 15 字）、中文摘要去引用、GB/T 7714 参考文献补全与用户自然语言指令遵循上的准确率、耗时及费用，择优固化提示词与模型路由策略。
-2. **外语专业全英文学位论文模板**：为外语专业硕士/博士论文增补英文排版与字数模板（区分正文宋体与全英文 Times New Roman 规范）。
-3. **工程文档补齐**：按需补充仓库根目录 `README.md` 与 `TEST-PLAN.md`。
+3. **DeepSeek LLM 默认配置（`backend/.env`）**：未配置 `LLM_API_KEY` 时自动降级为确定性规则修复与文案；本机导出默认 `/opt/homebrew/bin/xelatex` 与 `/opt/homebrew/bin/soffice`。
